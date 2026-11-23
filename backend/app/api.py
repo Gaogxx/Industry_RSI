@@ -73,6 +73,12 @@ class FeedbackIn(BaseModel):
     comment: str = ""
 
 
+def _demo_state() -> dict:
+    from .seed import STATE
+
+    return dict(STATE) if get_settings().seed_demo else {"state": "off"}
+
+
 @router.get("/meta", dependencies=R)
 def meta():
     s = get_settings()
@@ -87,7 +93,7 @@ def meta():
         "steps": {k: v.name for k, v in STEPS.items()},
         "severities": SEVERITIES, "case_statuses": CASE_STATUSES, "six_m": SIX_M, "action_kinds": ACTION_KINDS,
         "action_statuses": ACTION_STATUSES, "bullet_statuses": BULLET_STATUSES, "memory_kinds": MEMORY_KINDS, "sources": SOURCES,
-        "auth_required_for_write": bool(s.api_key),
+        "auth_required_for_write": bool(s.api_key), "demo": _demo_state(),
     }
 
 

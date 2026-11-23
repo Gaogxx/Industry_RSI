@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+import uuid
 
 from dbos import DBOS, SetWorkflowID
 from sqlmodel import col, select
@@ -24,7 +25,7 @@ from ..models import AuditLog, LearningEvent, RSIBenchmark, RSISession, RSITask,
 
 from .agents import Curriculum, Executor, Verifier, knowledge_gaps
 from .engine import (BREADTH, CAL_ATTEMPTS, CAL_TASKS, CAL_WAVE, CONCURRENCY, MAX_ATTEMPTS, MAX_DEPTH, PATIENCE, REFIT_EVERY,
-                     cold_start_benchmark, consolidate, evaluate, practice)
+                     cold_start_benchmark, consolidate, evaluate, practice_many)
 from .memory import load_memory, refit_and_store, save_memory
 from .twin import CURRENT_ERA, FabTwin, TaskSpec
 
@@ -125,8 +126,8 @@ async def s_wave(session_id: int, phase: str, specs: list[dict], seq: int, refit
     snapshot = mem.clone()
     seed_base = 2_000_000 + session_id * 1000  # 与测试集（90 万段）、验收门（96 万段）的种子不重叠
     attempts = CAL_ATTEMPTS if phase == "CAL" else MAX_ATTEMPTS
-    results = await asyncio.gather(*[asyncio.to_thread(practice, twin, snapshot, TaskSpec(**sp), seed_base + seq + i, executor,
-                                                       verifier, attempts) for i, sp in enumerate(specs)])
+    results = await practice_many(twin, snapshot, [TaskSpec(**sp) for sp in specs], [seed_base + seq + i for i in range(len(specs))],
+                                  executor, verifier, attempts)
     summary, weights = [], None
     with session_scope() as db:
         for i, r in enumerate(results):
@@ -255,7 +256,7 @@ async def start_session(trigger: str = "manual", return_handle: bool = False):
         db.commit()
         db.refresh(sess)
         sid = sess.id
-    wf_id = f"rsi-session-{sid}"
+    wf_id = f"rsi-session-{sid}-{uuid.uuid4().hex[:6]}"  # 演示库重建后会话编号会重复，工作流 ID 不能重复
     with session_scope() as db:
         sess = db.get(RSISession, sid)
         sess.workflow_id = wf_id

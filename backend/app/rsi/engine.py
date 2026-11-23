@@ -9,8 +9,13 @@ v2 在论文方案上加了两点：
 from __future__ import annotations
 
 import asyncio
+import atexit
+import multiprocessing
+import os
 import random
 from collections.abc import Awaitable, Callable
+from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 
 from ..fab.analytics import analyze_dataset
 from ..fab.kg import rank, share
@@ -23,7 +28,25 @@ CAL_ATTEMPTS = 5  # 校准题允许多试几次：只在前 3 名里找到真因
 
 
 def evaluate(mem: MemoryState) -> dict:
-    """在留出测试集上评估冻结的记忆：binary accuracy（首位命中）与 partial score（真因获得的后验概率）。"""
+    """在留出测试集上评估冻结的记忆：binary accuracy（首位命中）与 partial score（真因获得的后验概率）。
+
+    有证据权重时与逐题调用 rank(..., weights) 等价；特征按（证据, 该症状份额, 机台热点）缓存，记忆没变的症状不重算。
+    """
+    from .calibration import feature_rows, score
+
+    if not mem.weights:  # 没有证据权重时 rank() 按因子乘积计算后验，走逐题路径以保证结果逐位一致
+        return evaluate_slow(mem)
+    hits, partial = 0, 0.0
+    data = eval_set(mem.era)
+    for rows, truth in feature_rows([(e["evidence"], e["symptom"], e["truth"]) for e in data], mem.edges, mem.hotspot_weights()):
+        hit, post = score(rows, mem.weights, truth)
+        hits += hit
+        partial += post
+    return {"hit1": round(100 * hits / len(data), 2), "partial": round(100 * partial / len(data), 2), "n": len(data)}
+
+
+def evaluate_slow(mem: MemoryState) -> dict:
+    """逐题调用 rank()（用于核对 evaluate 的缓存实现）。"""
     hits, partial = 0, 0.0
     hw = mem.hotspot_weights()
     data = eval_set(mem.era)
@@ -58,6 +81,41 @@ def practice(twin: FabTwin, mem: MemoryState, spec: TaskSpec, seed: int, executo
     sym = a["symptom"]
     return {"spec": spec.as_dict(), "seed": seed, "symptom": sym, "evidence": ev, "weak": is_weak(ev, sym, mem),
             "attempts": attempts, "verdict": "PASS" if attempts[-1]["verdict"]["passed"] else "FAIL", "hidden": task.hidden}
+
+
+_POOL: ProcessPoolExecutor | None = None
+
+
+def _workers() -> int:
+    v = os.environ.get("KAIZEN_RSI_WORKERS")
+    return max(0, int(v)) if v not in (None, "") else min(8, max(0, (os.cpu_count() or 2) - 2))
+
+
+def _pool() -> ProcessPoolExecutor | None:
+    """练习题是纯 CPU 计算（孪生仿真 + 统计分析），用进程池才能真正并行；KAIZEN_RSI_WORKERS=0 关闭。"""
+    global _POOL
+    if _POOL is None and _workers() > 1:
+        _POOL = ProcessPoolExecutor(max_workers=_workers(), mp_context=multiprocessing.get_context("spawn"))
+        atexit.register(_POOL.shutdown, wait=False, cancel_futures=True)
+    return _POOL
+
+
+async def practice_many(twin: FabTwin, snapshot: MemoryState, specs: list[TaskSpec], seeds: list[int], executor: Executor,
+                        verifier: Verifier, max_attempts: int = MAX_ATTEMPTS) -> list[dict]:
+    """同一波次的练习题并行作答（结果只取决于题目与种子，与用线程还是进程无关）。"""
+    global _POOL
+    pool = _pool() if len(specs) >= 4 else None
+    if pool is not None:
+        lean = snapshot.clone()
+        lean.examples = []  # 作答用不到训练样本，不必传给子进程
+        loop = asyncio.get_running_loop()
+        try:
+            return list(await asyncio.gather(*[loop.run_in_executor(pool, practice, twin, lean, sp, sd, executor, verifier, max_attempts)
+                                               for sp, sd in zip(specs, seeds)]))
+        except BrokenProcessPool:
+            _POOL = None
+    return list(await asyncio.gather(*[asyncio.to_thread(practice, twin, snapshot, sp, sd, executor, verifier, max_attempts)
+                                       for sp, sd in zip(specs, seeds)]))
 
 
 def consolidate(mem: MemoryState, result: dict, ref: int | None = None, source: str = "sandbox",
@@ -154,8 +212,8 @@ async def run_session(mem: MemoryState, *, mode: str = "v2", breadth: int = BREA
         for w in range(0, len(specs), width):  # 预算在波次之间检查，不打断进行中的波次
             wave = specs[w:w + width]
             snapshot = mem.clone()  # 同一波次的题都基于波次开始时的记忆作答
-            results = await asyncio.gather(*[asyncio.to_thread(practice, twin, snapshot, s, seed_base + seq + i, executor,
-                                                               verifier, max_attempts) for i, s in enumerate(wave)])
+            results = await practice_many(twin, snapshot, wave, [seed_base + seq + i for i in range(len(wave))], executor,
+                                          verifier, max_attempts)
             seq += len(wave)
             for r in results:
                 await record(r, phase, len(history) + 1)
@@ -218,6 +276,12 @@ async def cold_start_benchmark(seeds: tuple[int, ...] = (500_000, 610_000, 720_0
     out["baseline_hit1"] = out["modes"].get("none", {}).get("hit1_mean")
     out["oracle"] = oracle_ceiling()
     return out
+
+
+def benchmark_in_process() -> dict:
+    """在独立进程里跑冷启动基准（不依赖数据库），首次启动时与历史回放并行。"""
+    os.environ["KAIZEN_RSI_WORKERS"] = "0"
+    return asyncio.run(cold_start_benchmark())
 
 
 def oracle_ceiling() -> dict:

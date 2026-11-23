@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import random
 from datetime import timedelta
 
@@ -24,6 +26,20 @@ from .fab.simulate import simulate
 from .improvement import build_cycle
 from .models import Action, Analysis, AuditLog, Case, EvidenceModel, FabDataset, LearningEvent, RSISession, RSITask, utcnow
 from .rsi.twin import CHANGES, HOTSPOTS, SITE_TRUTH, FabTwin, era_at, hotspot_tool, truth_for_era
+
+log = logging.getLogger("kaizen.seed")
+# 演示数据准备进度（/api/meta 返回给控制台显示）
+STATE = {"state": "idle", "progress": 0.0, "detail": ""}
+
+
+def _progress(p: float, detail: str, state: str = "seeding") -> None:
+    import time
+
+    now = time.monotonic()
+    if STATE.get("_stage") != detail.split("：")[0][:6] and STATE.get("_t"):
+        log.debug("演示数据阶段 %s 用时 %.1f s", STATE.get("_stage"), now - STATE["_t"])
+    STATE.update(state=state, progress=round(min(max(p, 0.0), 1.0), 3), detail=detail)
+
 
 # 各症状在一年中出现的相对频次（前道晶圆图类异常最多）
 SYMPTOM_WEIGHTS = {"WM_EDGE": 3, "WM_SCRATCH": 2, "WM_CENTER": 2, "WM_CLUSTER": 2, "TEST_VMIN": 2, "PKG_WARP": 1, "HBM_OPEN": 1}
@@ -322,7 +338,12 @@ async def seed(db: Session) -> int:
     events += [(now - timedelta(days=d, hours=-2), 2, "cycle", None) for d in CYCLE_DAYS]
     events += [(now - timedelta(days=d, hours=-3), 3, "rsi", None) for d in RSI_DAYS]
     prev_rsi = None
+    cost = {"create": 1, "close": 1, "cycle": 3, "change": 1, "rsi": 30}
+    total, done = sum(cost[e[2]] for e in events), 0
     for when, _, kind, spec in sorted(events, key=lambda e: (e[0], e[1])):
+        done += cost[kind]
+        _progress(0.8 * done / total, f"按时间回放到 {when:%Y-%m-%d}" + ("：RSI 自我进化会话" if kind == "rsi" else ""))
+        await asyncio.sleep(0)  # 让出事件循环：生成期间控制台照常响应
         if kind == "create":
             tl.create(spec)
         elif kind == "close":
@@ -402,6 +423,83 @@ async def finish_in_progress(db_factory) -> None:
             case.status = status
             db.add(case)
             db.commit()
+
+
+def _reset_demo() -> None:
+    """上次演示数据回放中途被打断：清空后重新生成（只在 KAIZEN_SEED_DEMO 打开时发生）。"""
+    from sqlmodel import SQLModel
+
+    from .db import get_engine
+
+    SQLModel.metadata.drop_all(get_engine())
+    SQLModel.metadata.create_all(get_engine())
+
+
+async def prepare_demo(rsi_on_startup: bool = True) -> None:
+    """准备演示数据：按时间回放去年至今 → 进行中案例的完整分析 → 今天的改进周期 → 冷启动基准 → 今天的 RSI 会话。
+
+    可以在后台运行（控制台先打开，数据陆续出现）；中途重启会从断点继续：回放没做完就重来，后面的步骤缺什么补什么。
+    """
+    from .db import session_scope
+    from .improvement import run_cycle
+    from .models import ImprovementCycle, RSIBenchmark
+
+    bench = None
+    try:
+        with session_scope() as db:
+            has_cases = db.exec(select(Case)).first() is not None
+            replayed = db.exec(select(ImprovementCycle).where(ImprovementCycle.trigger == "seed")).first() is not None
+            has_bench = db.exec(select(RSIBenchmark)).first() is not None
+        if rsi_on_startup and not has_bench:  # 冷启动基准不依赖数据库：放到独立进程里，和历史回放同时跑
+            import multiprocessing
+            from concurrent.futures import ProcessPoolExecutor
+
+            from .rsi.engine import benchmark_in_process
+
+            ex = ProcessPoolExecutor(max_workers=1, mp_context=multiprocessing.get_context("spawn"))
+            bench = asyncio.get_running_loop().run_in_executor(ex, benchmark_in_process)
+            ex.shutdown(wait=False)
+        if has_cases and not replayed:
+            log.warning("上次演示数据回放没有完成，重新生成")
+            _reset_demo()
+            has_cases = False
+        if not has_cases:
+            _progress(0.0, "开始按时间回放去年至今的产线")
+            with session_scope() as db:
+                n = await seed(db)
+            _progress(0.82, "为进行中的案例运行完整分析工作流")
+            await finish_in_progress(session_scope)
+            _progress(0.86, "今天的改进周期")
+            await run_cycle(trigger="seed")
+            log.info("已写入 %s 个演示案例（约 18 个月的按时间回放历史）并完成今天的改进周期", n)
+        if rsi_on_startup:
+            from .rsi.workflow import run_benchmark, start_session
+
+            with session_scope() as db:
+                has_live = db.exec(select(RSISession).where(RSISession.trigger == "seed")).first() is not None
+            if not has_bench:
+                _progress(0.88, "新产线冷启动基准（4 个种子 × 6 种模式）")
+                try:
+                    results = await bench
+                except Exception:  # noqa: BLE001  子进程不可用时退回到本进程
+                    log.warning("独立进程跑基准失败，改在本进程运行", exc_info=True)
+                    results = None
+                if results is None:
+                    await run_benchmark(trigger="seed")
+                else:
+                    with session_scope() as db:
+                        db.add(RSIBenchmark(trigger="seed", results=results))
+                        db.commit()
+            if not has_live:
+                _progress(0.94, "今天的 RSI 自我进化会话")
+                _, _, handle = await start_session(trigger="seed", return_handle=True)
+                summary = await handle.get_result()
+                log.info("RSI：冷启动基准已完成；今天的在线会话 %s 道题，留出集首位命中率 %s → %s",
+                         summary["tasks"], summary["hit1_before"], summary["hit1_after"])
+        _progress(1.0, "演示数据已就绪", state="ready")
+    except Exception as e:  # noqa: BLE001
+        log.exception("演示数据准备失败")
+        _progress(STATE["progress"], f"演示数据准备失败：{e}", state="error")
 
 
 def demo_truth(case: Case) -> str | None:

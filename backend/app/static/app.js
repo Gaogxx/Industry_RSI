@@ -806,10 +806,28 @@
   modeSel.onchange = function () { if (modeSel.value !== "rsi") CHAT.mode = modeSel.value; };
   chatLog.addEventListener("click", function (e) { var a = e.target.closest("a"); if (!a) return; var href = a.getAttribute("href") || "", i = href.indexOf("#/"); if (i > 0 && href.indexOf(location.origin) === 0) { e.preventDefault(); location.hash = href.slice(i); } });
 
+  // ── 首次启动：演示数据在后台生成，显示进度，生成完自动刷新 ──
+  function demoBanner(d) {
+    var el = document.getElementById("demo-banner"), busy = d && (d.state === "seeding" || d.state === "idle");
+    if (!d || (!busy && d.state !== "error")) { el.hidden = true; return; }
+    var pc = Math.round((d.progress || 0) * 100);
+    el.hidden = false;
+    el.innerHTML = d.state === "error" ? "<b>演示数据准备失败</b>：" + esc(d.detail) :
+      '<span class="spin" aria-hidden="true"></span><b>正在生成演示数据 ' + pc + "%</b><span>" + esc(d.detail || "按时间回放去年至今的产线") + '</span><span class="muted">可以先浏览，数据会陆续出现</span><i style="width:' + pc + '%"></i>';
+  }
+  function watchDemo() {
+    api("meta").then(function (m) {
+      META.demo = m.demo; demoBanner(m.demo);
+      if (m.demo && (m.demo.state === "seeding" || m.demo.state === "idle")) setTimeout(watchDemo, 2000); else route();
+    }).catch(function () { setTimeout(watchDemo, 4000); });
+  }
+
   api("meta").then(function (m) {
     META = m;
     document.title = "Kaizen";
     window.addEventListener("hashchange", route);
     route();
+    demoBanner(m.demo);
+    if (m.demo && (m.demo.state === "seeding" || m.demo.state === "idle")) setTimeout(watchDemo, 2000);
   }).catch(function (e) { chatLog.innerHTML = '<div class="panel empty">无法连接后端：' + esc(e.message) + "</div>"; });
 })();

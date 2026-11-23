@@ -11,6 +11,7 @@ os.environ.update({
     "KAIZEN_LLM_API_KEY": "",
     "KAIZEN_API_KEY": "",
     "KAIZEN_SEED_DEMO": "true",
+    "KAIZEN_SEED_BACKGROUND": "false",
     "KAIZEN_EMBEDDING_MODEL": "",
     "PYDANTIC_AI_NO_BANNER": "1",
 })

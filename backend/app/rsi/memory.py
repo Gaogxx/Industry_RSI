@@ -38,10 +38,10 @@ class MemoryState:
 
     def refit(self, gate: bool = True) -> dict:
         """用全部已验证样本重新拟合证据权重；候选权重必须通过验收门（封存面板上不退步）才会被采纳。"""
-        from .calibration import features, fit, gate_check
+        from .calibration import feature_rows, fit, gate_check
 
         hw = self.hotspot_weights()
-        res = fit([(features(ev, sym, self.edges, hw), cause) for ev, sym, cause in self.examples], start=self.weights)
+        res = fit(feature_rows(self.examples, self.edges, hw), start=self.weights)
         res["accepted"] = False
         if res["n"] < MIN_EXAMPLES:  # 样本太少时保持现状
             res["reason"] = f"已验证样本 {res['n']} 个，不足 {MIN_EXAMPLES} 个"

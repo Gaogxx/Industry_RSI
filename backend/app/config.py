@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     # DBOS 持久化工作流的系统库（SQLite 即可；多实例部署改为 PostgreSQL）
     dbos_database_url: str = "sqlite:///./data/kaizen-dbos.sqlite"
     seed_demo: bool = True
+    seed_background: bool = True  # 演示数据在后台生成，服务器立即可用（测试里关闭，等数据生成完再开始）
     # 可选：/mcp 工具服务器（Claude / VS Code / Cursor 等 MCP 客户端调用案例库与分析工作流）
     enable_mcp: bool = True
 

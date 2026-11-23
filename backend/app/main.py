@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -23,9 +24,8 @@ from .api import router as api_router
 from .auth import BearerASGI
 from .config import get_settings
 from .db import init_db, session_scope
-from .improvement import run_cycle
 from .mcp_server import mcp
-from .seed import finish_in_progress, seed
+from .seed import prepare_demo
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("kaizen")
@@ -39,21 +39,12 @@ async def lifespan(app: FastAPI):
     init_db()
     durable.init_dbos()
     durable.launch()  # 恢复上次中断的分析工作流
+    task = None
     if s.seed_demo:
-        with session_scope() as db:
-            n = await seed(db)
-        if n:
-            await finish_in_progress(session_scope)
-            await run_cycle(trigger="seed")
-            log.info("已写入 %s 个演示案例（约 18 个月的按时间回放历史）并完成今天的改进周期", n)
-            if s.rsi_on_startup:
-                from .rsi.workflow import run_benchmark, start_session
-
-                await run_benchmark(trigger="seed")
-                _, _, handle = await start_session(trigger="seed", return_handle=True)
-                summary = await handle.get_result()
-                log.info("RSI：冷启动基准已完成；首个在线探索会话 %s 道题，留出集首位命中率 %s → %s",
-                         summary["tasks"], summary["hit1_before"], summary["hit1_after"])
+        if s.seed_background:  # 控制台先启动，演示数据在后台生成（首次约 1 分钟），界面显示进度
+            task = asyncio.create_task(prepare_demo(s.rsi_on_startup))
+        else:
+            await prepare_demo(s.rsi_on_startup)
     from .agent.workflow import ensure_schedule
 
     await ensure_schedule()
@@ -61,6 +52,8 @@ async def lifespan(app: FastAPI):
              "离线（统计 + 贝叶斯内核）" if s.offline else f"{s.llm_model} @ {s.llm_base_url}", s.nightly_cron or "关闭")
     async with mcp.session_manager.run():
         yield
+    if task and not task.done():
+        task.cancel()
     durable.shutdown()
 
 

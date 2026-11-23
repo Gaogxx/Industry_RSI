@@ -13,6 +13,7 @@ w 在所有症状间共享，一道验证过的练习题就能同时改进所有
 from __future__ import annotations
 
 import math
+from collections import OrderedDict
 
 from ..fab.kg import FACTOR_NAMES, EdgeState, rank
 
@@ -21,15 +22,74 @@ PRIOR_LAMBDA = 2.0  # 越大越相信专家设定；样本少时自动回到 w�
 
 def features(evidence: dict, symptom: str, edges: dict[str, dict[str, EdgeState]],
              hotspots: dict[tuple[str, str], float]) -> list[tuple[str, list[float]]]:
-    """每个候选根因的 log 因子向量（顺序同 FACTOR_NAMES；同名因子相加）。"""
-    rows = []
+    """每个候选根因的 log 因子向量（顺序同 FACTOR_NAMES；同名因子相加），按该症状下根因的登记顺序排列。
+
+    rank() 产生的因子都在 FACTOR_NAMES 之内，所以 softmax(Σ w·f) 与 rank(..., weights) 的后验完全相同。
+    """
+    rows = {}
     for h in rank(evidence, symptom, edges, hotspots):
         f = [0.0] * len(FACTOR_NAMES)
         for x in h.factors:
-            if x["name"] in FACTOR_NAMES:
-                f[FACTOR_NAMES.index(x["name"])] += math.log(max(x["x"], 1e-9))
-        rows.append((h.cause_code, f))
-    return rows
+            f[FACTOR_NAMES.index(x["name"])] += math.log(max(x["x"], 1e-9))
+        rows[h.cause_code] = (h.cause_code, f)
+    order = list(edges.get(symptom, {}))
+    return [rows[c] for c in order if c in rows] + [r for c, r in rows.items() if c not in order]
+
+
+def score(rows: list[tuple[str, list[float]]], weights: dict | None, truth: str) -> tuple[bool, float]:
+    """用缓存的特征计算（首位是否命中, 真因后验），与 rank(..., weights) 的结果一致（并列时取登记顺序靠前者）。"""
+    if not rows:
+        return False, 0.0
+    w = [float((weights or {}).get(n, 1.0)) for n in FACTOR_NAMES]
+    s = [sum(wi * fi for wi, fi in zip(w, f)) for _, f in rows]
+    m = max(s)
+    ex = [math.exp(v - m) for v in s]
+    z = sum(ex)
+    best = s.index(m)
+    post = next((e / z for (c, _), e in zip(rows, ex) if c == truth), 0.0)
+    return rows[best][0] == truth, post
+
+
+# 特征缓存：一道题的特征只取决于它的证据、该症状下各根因的份额与相关机台热点。
+# 校准波次之间大部分症状的份额不变，所以重拟合时绝大多数样本可以直接复用上次算好的特征（结果完全一致）。
+_FEATURES: OrderedDict = OrderedDict()  # LRU：常用的（测试集、验收门、训练样本）留在缓存里
+_FEATURES_MAX = 60_000
+_FP_IDS: dict[tuple, int] = {}
+
+
+def _fingerprints(edges: dict[str, dict[str, EdgeState]], hotspots: dict[tuple[str, str], float]) -> dict[str, int]:
+    by_cause: dict[str, list] = {}
+    for (cause, tool), v in hotspots.items():
+        by_cause.setdefault(cause, []).append((tool, v))
+    out = {}
+    for sym, table in edges.items():
+        fp = (sym, tuple((c, e.alpha, e.alpha0) for c, e in table.items()),
+              tuple((c, tuple(sorted(by_cause.get(c, [])))) for c in table))
+        if fp not in _FP_IDS:
+            if len(_FP_IDS) > 200_000:
+                _FP_IDS.clear()
+                _FEATURES.clear()
+            _FP_IDS[fp] = len(_FP_IDS)
+        out[sym] = _FP_IDS[fp]
+    return out
+
+
+def feature_rows(examples: list[tuple[dict, str, str]], edges: dict[str, dict[str, EdgeState]],
+                 hotspots: dict[tuple[str, str], float]) -> list[tuple[list, str]]:
+    """[(证据, 症状, 已验证根因)] → fit() 的输入；未变化的样本复用缓存。"""
+    fps = _fingerprints(edges, hotspots)
+    out = []
+    for ev, sym, cause in examples:
+        key = (id(ev), fps.get(sym))
+        hit = _FEATURES.get(key)
+        if hit is None or hit[0] is not ev:
+            hit = _FEATURES[key] = (ev, features(ev, sym, edges, hotspots))
+            if len(_FEATURES) > _FEATURES_MAX:
+                _FEATURES.popitem(last=False)
+        else:
+            _FEATURES.move_to_end(key)
+        out.append((hit[1], cause))
+    return out
 
 
 def _solve(a: list[list[float]], b: list[float]) -> list[float]:
@@ -57,22 +117,23 @@ def fit(examples: list[tuple[list[tuple[str, list[float]]], str]], lam: float = 
     k = len(FACTOR_NAMES)
     w = [float((start or {}).get(n, 1.0)) for n in FACTOR_NAMES]
     data = [(rows, truth) for rows, truth in examples if any(c == truth for c, _ in rows) and len(rows) > 1]
+    rng = range(k)
     for _ in range(iters):
         g = [-lam * (wi - 1.0) for wi in w]
-        hmat = [[(-lam if i == j else 0.0) for j in range(k)] for i in range(k)]
+        hmat = [[(-lam if i == j else 0.0) for j in rng] for i in rng]
         for rows, truth in data:
-            s = [sum(wi * fi for wi, fi in zip(w, f)) for _, f in rows]
+            feats = [f for _, f in rows]
+            s = [sum(wi * fi for wi, fi in zip(w, f)) for f in feats]
             mx = max(s)
             ex = [math.exp(v - mx) for v in s]
             z = sum(ex)
             p = [e / z for e in ex]
-            mean = [sum(p[j] * rows[j][1][i] for j in range(len(rows))) for i in range(k)]
-            for j, (c, f) in enumerate(rows):
-                y = 1.0 if c == truth else 0.0
-                for i in range(k):
-                    g[i] += (y - p[j]) * f[i]
-                    for l in range(k):
-                        hmat[i][l] -= p[j] * (f[i] - mean[i]) * (f[l] - mean[l])
+            mean = [sum(pj * f[i] for pj, f in zip(p, feats)) for i in rng]
+            for (c, f), pj in zip(rows, p):
+                r = (1.0 if c == truth else 0.0) - pj
+                d = [fi - mi for fi, mi in zip(f, mean)]
+                g = [gi + r * fi for gi, fi in zip(g, f)]
+                hmat = [[h - pd * dl for h, dl in zip(row, d)] for row, pd in zip(hmat, [pj * di for di in d])]
         step = _solve([[-x for x in row] for row in hmat], g)
         w = [wi + si for wi, si in zip(w, step)]
         if max(abs(si) for si in step) < 1e-4:
@@ -93,8 +154,15 @@ def gate_check(mem, weights: dict | None) -> dict:
 
     hw = mem.hotspot_weights()
     hits, loss, panel = 0, 0.0, gate_panel(getattr(mem, "era", None))
-    for e in panel:
-        hyps = rank(e["evidence"], e["symptom"], mem.edges, hw, weights)
-        hits += bool(hyps and hyps[0].cause_code == e["truth"])
-        loss -= math.log(max(next((h.posterior for h in hyps if h.cause_code == e["truth"]), 0.0), 1e-6))
+    if not weights:  # 专家设定（无权重）时 rank() 用因子乘积，逐题计算以保证一致
+        for e in panel:
+            hyps = rank(e["evidence"], e["symptom"], mem.edges, hw, weights)
+            hits += bool(hyps and hyps[0].cause_code == e["truth"])
+            loss -= math.log(max(next((h.posterior for h in hyps if h.cause_code == e["truth"]), 0.0), 1e-6))
+        return {"hit1": round(100 * hits / len(panel), 2), "logloss": round(loss / len(panel), 4)}
+    rows = feature_rows([(e["evidence"], e["symptom"], e["truth"]) for e in panel], mem.edges, hw)
+    for r, truth in rows:
+        hit, post = score(r, weights, truth)
+        hits += hit
+        loss -= math.log(max(post, 1e-6))
     return {"hit1": round(100 * hits / len(panel), 2), "logloss": round(loss / len(panel), 4)}

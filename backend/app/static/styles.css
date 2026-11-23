@@ -355,3 +355,12 @@ a.mem-part:hover { border-color: var(--accent-line); }
   .mem-parts { grid-template-columns: minmax(0, 1fr); }
 }
 @media (prefers-reduced-motion: reduce) { .typing i { animation: none; opacity: .6; } .sidebar { transition: none; } }
+
+/* 首次启动：演示数据生成进度 */
+.demo-banner { position: relative; flex: none; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 16px 8px; padding: 8px 14px 10px;
+  border-radius: 10px; background: var(--accent-soft); font-size: 13px; overflow: hidden; }
+.demo-banner[hidden] { display: none; }
+.demo-banner i { position: absolute; left: 0; bottom: 0; height: 3px; background: var(--accent); transition: width .4s ease; }
+.spin { width: 12px; height: 12px; border: 2px solid var(--accent); border-top-color: transparent; border-radius: 50%; animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spin { animation: none; } .demo-banner i { transition: none; } }
