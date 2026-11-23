@@ -223,8 +223,14 @@ async def _rsi_events(actor: str) -> AsyncIterator:
             w = ev.get("weights") or {}
             msg = (f"自我进化完成：共 {ev['tasks']} 道练习（广度 {ev['brs']} · 证据校准 {ev.get('cal', 0)} · 深度 {ev['drs']}），"
                    f"验证通过 {ev['passes']} 道；证据权重重拟合 {ev.get('refits_accepted', 0)} 次被验收门采纳、"
-                   f"{ev.get('refits_rejected', 0)} 次被拒绝。\n\n留出测试集首位命中率 **{ev['hit1_before']} → {ev['hit1_after']}**，"
-                   f"真因后验 {ev['partial_before']} → {ev['partial_after']}；生效记忆 {ev['memory_items']} 条。"
+                   f"{ev.get('refits_rejected', 0)} 次被拒绝。\n\n"
+                   + (f"留出测试集首位命中率维持 **{ev['hit1_after']}**（持平）："
+                      + ("这次产线变更没有让命中率下降，没有需要追赶的差距；" if ev.get("plateau_reason") == "no_gap" else
+                         "上次会话之后孪生没有新的产线变更，也没有发现新的知识缺口，记忆已经跟上产线现状；")
+                      + f"真因后验 {ev['partial_before']} → {ev['partial_after']}。"
+                      if ev.get("plateau") else
+                      f"留出测试集首位命中率 **{ev['hit1_before']} → {ev['hit1_after']}**，真因后验 {ev['partial_before']} → {ev['partial_after']}；")
+                   + f"生效记忆 {ev['memory_items']} 条。"
                    + ("\n\n当前证据权重：" + "，".join(f"{k} ×{v:.2f}" for k, v in w.items()) if w else ""))
             yield TextMessageStartEvent(type=EventType.TEXT_MESSAGE_START, message_id=mid, role="assistant")
             yield TextMessageContentEvent(type=EventType.TEXT_MESSAGE_CONTENT, message_id=mid, delta=msg)

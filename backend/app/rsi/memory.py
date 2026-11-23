@@ -34,13 +34,14 @@ class MemoryState:
     items: dict[str, dict] = field(default_factory=dict)  # key -> 条目
     weights: dict[str, float] | None = None  # 学到的证据权重（None = 专家设定，全部为 1）
     examples: list[tuple[dict, str, str]] = field(default_factory=list)  # (证据, 症状, 已验证根因)：证据权重的训练样本
+    era: int | None = None  # 面对哪个时段的孪生（None = 现在）：决定留出测试集与验收门面板
 
     def refit(self, gate: bool = True) -> dict:
         """用全部已验证样本重新拟合证据权重；候选权重必须通过验收门（封存面板上不退步）才会被采纳。"""
         from .calibration import features, fit, gate_check
 
         hw = self.hotspot_weights()
-        res = fit([(features(ev, sym, self.edges, hw), cause) for ev, sym, cause in self.examples])
+        res = fit([(features(ev, sym, self.edges, hw), cause) for ev, sym, cause in self.examples], start=self.weights)
         res["accepted"] = False
         if res["n"] < MIN_EXAMPLES:  # 样本太少时保持现状
             res["reason"] = f"已验证样本 {res['n']} 个，不足 {MIN_EXAMPLES} 个"
@@ -60,7 +61,14 @@ class MemoryState:
         return cls(edges=prior_edges())
 
     def clone(self) -> "MemoryState":
-        return copy.deepcopy(self)
+        """作答用的快照：训练样本只读、量大，不做深拷贝。"""
+        examples, self.examples = self.examples, []
+        try:
+            out = copy.deepcopy(self)
+        finally:
+            self.examples = examples
+        out.examples = list(examples)
+        return out
 
     def hotspot_weights(self, sandbox_weight: float = SANDBOX_WEIGHT) -> dict[tuple[str, str], float]:
         return {k: v.get("real", 0) + sandbox_weight * v.get("sandbox", 0) for k, v in self.hotspots.items()}
@@ -171,6 +179,22 @@ def consolidate_fail(mem: MemoryState, symptom: str, cause_code: str, evidence: 
     return events
 
 
+def forget(mem: MemoryState, symptom: str, label: str, keep: float | None = None) -> dict | None:
+    """产线变更后的部分遗忘：受影响症状下学到的份额只保留 keep（向教科书先验收缩），让变更后的新证据更快生效。"""
+    table = mem.edges.get(symptom)
+    if not table:
+        return None
+    from ..fab.kg import FORGET_KEEP, forget_table
+
+    keep = FORGET_KEEP if keep is None else keep
+    top = max(table.values(), key=lambda e: e.alpha)
+    before = share(table, top.cause_code)
+    forget_table(table, keep)
+    return {"kind": "drift", "source": "real", "symptom": symptom, "cause_code": top.cause_code, "before": round(before, 4),
+            "after": round(share(table, top.cause_code), 4),
+            "detail": f"产线变更：{label}。该症状的旧经验降权到 {keep:.0%}，变更后的新证据会更快生效"}
+
+
 # ── 数据库同步 ──────────────────────────────────────────
 def ensure_textbook(db: Session) -> None:
     if db.exec(select(CausalEdge)).first():
@@ -214,13 +238,16 @@ def training_examples(db: Session) -> list[tuple[dict, str, str]]:
     return out
 
 
-def refit_and_store(db: Session, mem: MemoryState, source: str = "rsi") -> dict:
+def refit_and_store(db: Session, mem: MemoryState, source: str = "rsi", when=None) -> dict:
     """从数据库收集全部已验证样本（孪生 PASS 练习 + 产线确认案例）重拟合证据权重；通过验收门才保存新版本。"""
     mem.examples = training_examples(db)
     res = mem.refit()
     if res["accepted"]:
-        db.add(EvidenceModel(weights=res["weights"], n=res["n"], avg_loglik=res["avg_loglik"], source=source,
-                             gate=res.get("gate", {})))
+        row = EvidenceModel(weights=res["weights"], n=res["n"], avg_loglik=res["avg_loglik"], source=source,
+                            gate=res.get("gate", {}))
+        if when:
+            row.created_at = when
+        db.add(row)
         db.flush()
     return res
 

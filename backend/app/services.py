@@ -18,8 +18,11 @@ class NotFound(Exception):
     pass
 
 
-def audit(db: Session, actor: str, action: str, target: str = "", **detail) -> None:
-    db.add(AuditLog(actor=actor, action=action, target=target, detail=detail))
+def audit(db: Session, actor: str, action: str, target: str = "", when=None, **detail) -> None:
+    row = AuditLog(actor=actor, action=action, target=target, detail=detail)
+    if when:
+        row.created_at = when
+    db.add(row)
 
 
 def case_dict(c: Case) -> dict:

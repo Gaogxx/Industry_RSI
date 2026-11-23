@@ -386,4 +386,4 @@ async def search(q: str, stage: str | None = None, limit: int = 5, db: Session =
 
 @router.get("/audit", dependencies=R)
 def audit_log(limit: int = 100, db: Session = Depends(get_session)):
-    return db.exec(select(AuditLog).order_by(col(AuditLog.id).desc()).limit(limit)).all()
+    return db.exec(select(AuditLog).order_by(col(AuditLog.created_at).desc(), col(AuditLog.id).desc()).limit(limit)).all()

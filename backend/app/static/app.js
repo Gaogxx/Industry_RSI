@@ -170,7 +170,7 @@
   function bindRows() { view.querySelectorAll("tr[data-href]").forEach(function (tr) { tr.onclick = function () { location.hash = tr.dataset.href; }; }); }
 
   function eventLine(e) {
-    var kind = { confirm: "确认", false_lead: "误导", refute: "否定", edge_added: "新知识", hotspot: "机台热点", memory_add: "新记忆",
+    var kind = { confirm: "确认", false_lead: "误导", drift: "产线变更", refute: "否定", edge_added: "新知识", hotspot: "机台热点", memory_add: "新记忆",
       memory_pass: "记忆强化", memory_fail: "失败教训", memory_retire: "记忆停用", memory_manual: "人工" }[e.kind] || e.kind;
     var share = ["confirm", "false_lead", "refute", "edge_added"].indexOf(e.kind) >= 0 ? " <b>" + pct(e.before) + " → " + pct(e.after) + "</b>" : "";
     var src = e.source === "sandbox" ? '<span class="badge accent">孪生</span> ' : e.source === "real" ? '<span class="badge ok">产线</span> ' : "";
@@ -461,7 +461,7 @@
         return '<tr><td class="num">' + t.step + "</td><td>" + esc(t.phase) + "</td><td><b>" + esc(symName(t.spec.symptom)) + '</b><br><span class="badge">' + esc(t.spec.variant) + "</span> " + esc(t.spec.difficulty) + (t.spec.decoy_pm ? " + PM 干扰" : "") +
           '<div class="muted small">' + esc(t.spec.rationale) + "</div></td><td>" + att + '</td><td class="muted small">' + (last.verdict.evidence || []).map(esc).join("<br>") + "</td><td>" + (t.verdict === "PASS" ? '<span class="badge ok">PASS</span>' : '<span class="badge warn">FAIL</span>') +
           '</td><td class="small">' + (mem || '<span class="muted">-</span>') + '</td><td class="muted small">' + esc(t.hidden.cause || "") + (t.hidden.tool ? " @ " + esc(t.hidden.tool) : "") + "</td></tr>"; }).join("") +
-      (cal.length ? '<tr><td></td><td>CAL</td><td colspan="6"><b>证据校准 ' + cal.length + " 道</b>（验证通过 " + calPass + " 道）：难度易 / 中 / 难 = 2 : 4 : 4，按信息价值分配症状；每题最多试 5 个假设以减少选择偏差。<span class=\"muted\">在线模式下只用来学习证据权重，不改动产线先验。</span></td></tr>" : "") +
+      (cal.length ? '<tr><td></td><td>CAL</td><td colspan="6"><b>证据校准 ' + cal.length + " 道</b>（验证通过 " + calPass + " 道）：难度易 / 中 / 难 = 2 : 4 : 4，按信息价值分配症状；每题最多试 5 个假设以减少选择偏差。<span class=\"muted\">在线模式下只用来学习证据权重，不改动产线先验；产线变更涉及的症状除外（孪生已同步该变更）。</span></td></tr>" : "") +
       "</tbody></table></div>";
   }
 
@@ -473,11 +473,26 @@
   }
   function renderLive() { var el = document.getElementById("live-box"); if (el) el.outerHTML = liveBox(); }
 
+  var TRIGGER = { schedule: "每月定时", seed: "启动时", console: "对话", manual: "手动" };
+  function trigName(t) { return TRIGGER[t] || String(t || "").replace(/^user:/, ""); }
+  function hitPlain(s) { if (!s || s.hit1_before == null) return "-"; return s.plateau ? s.hit1_after + "（持平）" : s.hit1_before + " → " + s.hit1_after; }
+  function plateauWhy(s) { return s.plateau_reason === "no_gap" ? "这次产线变更没有让命中率下降，没有需要追赶的差距" : "上次会话之后孪生没有新的产线变更，也没有发现新的知识缺口，记忆已经跟上产线现状"; }
+  function hitCell(s) {
+    if (!s || s.hit1_before == null) return '<span class="muted">进行中</span>';
+    if (s.plateau) return "<b>" + s.hit1_after + '</b> <span class="badge" title="' + plateauWhy(s) + '">持平</span>';
+    var d = Math.round((s.hit1_after - s.hit1_before) * 100) / 100;
+    return s.hit1_before + " → <b>" + s.hit1_after + '</b> <span class="badge ' + (d > 0 ? "ok" : "warn") + '">' + (d > 0 ? "+" : "") + d + "</span>";
+  }
+  function changeText(cfg) { var ch = (cfg && cfg.changes) || []; return ch.length ? ch.map(function (c) { return esc(c.label); }).join("；") : '<span class="muted">无变更</span>'; }
+  function sessionTable(sessions, sid) {
+    return '<div class="table-wrap"><table><thead><tr><th>#</th><th>时间</th><th>触发</th><th>上次会话之后的产线变更</th><th>留出集首位命中率</th><th>练习题</th><th>权重更新 采纳 / 拒绝</th></tr></thead><tbody>' +
+      sessions.map(function (x) { var sm = x.summary || {};
+        return '<tr class="click' + (x.id === sid ? " sel" : "") + '" data-href="#/evolution?tab=rsi&s=' + x.id + '"><td class="num">' + x.id + '</td><td class="num">' + d10(x.created_at) + "</td><td>" + esc(trigName(x.trigger)) + '</td><td class="small">' + changeText(x.config) + '</td><td class="num">' + hitCell(sm) + '</td><td class="num">' + (sm.tasks || "-") + '</td><td class="num">' + (sm.refits_accepted == null ? "-" : sm.refits_accepted + " / " + sm.refits_rejected) + "</td></tr>"; }).join("") + "</tbody></table></div>";
+  }
   var EVO_TABS = [
     ["overview", "概览", "看自我进化有没有用：两种学习加起来让根因命中率提高了多少、证据权重学成了什么样、和不做 RSI 相比好多少。"],
     ["rsi", "RSI 学习", "智能体在数字孪生里自己出题、作答、验证：每次会话的得分曲线、每道练习题，以及每次权重更新是否通过验收门。"],
-    ["continual", "持续学习", "从产线真实案例学习：工程师每确认一个根因，根因先验和机台热点就更新；学习曲线对比“持续学习”和“冻结在教科书先验”。"],
-    ["memory", "记忆条目", "学到的东西本身：带适用条件的排查流程和教训，记着来源和验证通过 / 失败次数。分析新案例时，生效条目会被调取参与推理；发现错误可以停用。"]];
+    ["continual", "持续学习", "从产线真实案例学习：工程师每确认一个根因，根因先验和机台热点就更新；学习曲线对比“持续学习”和“冻结在教科书先验”。"]];
   function evoTabs(tab) {
     var cur = EVO_TABS.find(function (t) { return t[0] === tab; }) || EVO_TABS[0];
     return '<div class="subtabs">' + EVO_TABS.map(function (t) { return '<a href="#/evolution?tab=' + t[0] + '" class="' + (t[0] === cur[0] ? "on" : "") + '">' + t[1] + "</a>"; }).join("") + '</div><p class="tab-desc">' + cur[2] + "</p>";
@@ -485,6 +500,7 @@
 
   function pageEvolution(params) {
     var q = new URLSearchParams(params || ""), tab = { twin: "rsi", line: "continual" }[q.get("tab")] || q.get("tab") || (q.get("s") ? "rsi" : "overview");
+    if (["overview", "rsi", "continual"].indexOf(tab) < 0) tab = "overview";
     var head = '<div class="page-head"><h1>自我进化</h1><span class="muted small">RSI 学习和持续学习是同一件事：把验证过的结论写进同一套记忆，区别只在标签来自数字孪生还是产线。</span><span class="spacer"></span>' +
       '<button class="btn" id="evo-run">▶ 启动自我进化会话</button></div>' + evoTabs(tab);
     var bindRun = function () { var b = document.getElementById("evo-run"); if (b) b.onclick = function () { sendChat("启动一次自我进化会话", "rsi"); }; };
@@ -493,7 +509,7 @@
       var v2 = b && b.modes.v2, none = b && b.modes.none;
       view.innerHTML = head + '<div class="tiles">' +
         '<div class="tile"><div class="v" style="color:var(--accent)">' + (v2 ? v2.hit1_mean : "-") + '</div><div class="l">新产线冷启动 · v2 自我进化后（不做：' + (none ? none.hit1_mean : "-") + "）</div></div>" +
-        '<div class="tile"><div class="v">' + (s.hit1_before == null ? "-" : s.hit1_before + " → " + s.hit1_after) + '</div><div class="l">最近一次在线会话 · 留出集首位命中率</div></div>' +
+        '<div class="tile"><div class="v">' + hitPlain(s) + '</div><div class="l">最近一次 RSI 会话 · 留出集首位命中率</div></div>' +
         '<div class="tile"><div class="v">' + pct(bt.hit1_learning) + '</div><div class="l">真实案例持续学习（冻结先验 ' + pct(bt.hit1_frozen) + "）</div></div>" +
         '<div class="tile"><div class="v">' + (W.current ? "n=" + W.current.n : "-") + '</div><div class="l">证据权重：已验证样本 · ' + W.history.length + " 个版本</div></div>" +
         '<div class="tile"><div class="v">' + L.memory_active + '</div><div class="l">生效记忆（孪生验证 ' + L.memory_sandbox + "）</div></div></div>" +
@@ -511,16 +527,18 @@
         view.innerHTML = head + '<div class="grid g3"><div class="panel"><h2>🎓 课程 agent</h2><p class="muted small">独占“练什么”。按<b>信息价值</b>选题：知识梯度 KG(*) × 证据模糊率，即“再练几道这类题，期望命中率能涨多少”；另出一批证据校准题。连续几题不再带来新知识就停。</p></div>' +
           '<div class="panel"><h2>🔧 执行 agent</h2><p class="muted small">唯一能写记忆的角色。用当前记忆做根因分析并提出整改；验证判定之后才合并经验：先验、热点、证据权重的训练样本、带条件的流程与教训。</p></div>' +
           '<div class="panel"><h2>⚖️ 验证 agent</h2><p class="muted small">独占“判真假”。只看孪生的干预反馈：按提议整改后同一时段良率是否恢复。看不到执行 agent 的推理和记忆；改善低于量测噪声一律不通过。</p></div></div>' + liveBox() +
-          '<div class="panel" style="margin-top:16px"><h2>在线会话' + (sess ? " #" + sess.id + ' <span class="muted" style="font-weight:400">' + dt(sess.created_at) + " · " + esc(sess.trigger) + " · " + esc(sess.status) + "</span>" : "") + "</h2>" +
+          '<div class="panel" style="margin-top:16px"><h2>会话时间线 <span class="muted" style="font-weight:400;font-size:12px">产线变更同步到数字孪生后，下一次会话把变化学进来；点一行查看详情</span></h2>' + sessionTable(sessions, sid) + "</div>" +
+          '<div class="panel" style="margin-top:16px"><h2>会话' + (sess ? " #" + sess.id + ' <span class="muted" style="font-weight:400">' + dt(sess.created_at) + " · " + esc(trigName(sess.trigger)) + " · " + esc({ done: "已完成", running: "进行中", error: "出错" }[sess.status] || sess.status) + "</span>" : "") + "</h2>" +
+          (sess && (sess.config || {}).changes && sess.config.changes.length ? '<div class="callout">本次会话之前同步到孪生的产线变更：<b>' + changeText(sess.config) + "</b>。课程 agent 把这些症状的校准题比例提高到 4 倍，这部分校准题也会更新先验。</div>" : "") +
+          (sess && sm.plateau ? '<div class="callout">命中率维持 <b>' + sm.hit1_after + "</b>（持平）：" + plateauWhy(sm) + "。</div>" : "") +
           (sess ? '<div class="big-compare"><span class="n f">' + (sm.hit1_before == null ? "-" : sm.hit1_before) + '</span><span>→</span><span class="n l">' + (sm.hit1_after == null ? "-" : sm.hit1_after) + '</span><span>留出集首位命中率</span><span class="muted">真因后验 ' + sm.partial_before + " → " + sm.partial_after + " · " + sm.tasks + " 题（广度 " + sm.brs + " · 校准 " + (sm.cal || 0) + " · 深度 " + sm.drs + "）· 权重重拟合 采纳 " + (sm.refits_accepted || 0) + " / 拒绝 " + (sm.refits_rejected || 0) + "</span></div>" + rsiCurve(sess.curve) +
-            '<p class="muted small">在已有产线记忆之上练习：孪生经验权重 0.5；校准题只用来学证据权重，不改动产线先验。</p>' : '<div class="empty">尚无会话</div>') +
-          (sessions.length > 1 ? "<h3>历史会话</h3><div class=\"chips\">" + sessions.map(function (x) { return '<a class="chip" href="#/evolution?tab=rsi&s=' + x.id + '">#' + x.id + " " + esc(x.status) + (x.summary && x.summary.hit1_after != null ? " · " + x.summary.hit1_before + "→" + x.summary.hit1_after : "") + "</a>"; }).join("") + "</div>" : "") + "</div>" +
+            '<p class="muted small">在已有产线记忆之上练习：孪生经验权重 0.5；校准题只用来学证据权重，不改动产线先验（产线变更涉及的症状除外）。</p>' : '<div class="empty">尚无会话</div>') + "</div>" +
           (sess && sess.weights_log && sess.weights_log.length ? '<div class="panel" style="margin-top:16px"><h2>证据权重重拟合与验收门（本会话）</h2><div class="table-wrap"><table><thead><tr><th>阶段</th><th>样本</th><th>候选权重</th><th>面板命中率</th><th>对数损失</th><th>结果</th></tr></thead><tbody>' +
             sess.weights_log.map(function (w) { var g = w.gate || {}; return "<tr><td>" + esc(w.phase) + '</td><td class="num">' + w.n + '</td><td class="small">' + Object.keys(w.weights || {}).map(function (k) { return esc(k) + " ×" + w.weights[k].toFixed(2); }).join(" · ") + '</td><td class="num">' + (g.before ? g.before.hit1 + " → " + g.after.hit1 : "-") + '</td><td class="num">' + (g.before ? g.before.logloss + " → " + g.after.logloss : "-") + "</td><td>" + (w.accepted ? '<span class="badge ok">采纳</span>' : '<span class="badge warn" title="' + esc(w.reason) + '">拒绝</span>') + "</td></tr>"; }).join("") + "</tbody></table></div></div>" : "") +
           '<div class="panel" style="margin-top:16px"><h2>练习题明细（课程出题 → 执行作答 → 验证判定 → 记忆合并）</h2>' + practiceTable(tasks) + "</div>" +
           '<div class="panel" style="margin-top:16px"><h2>知识缺口 · 信息价值（课程 agent 的出题依据）</h2><div class="table-wrap"><table><thead><tr><th>症状</th><th>工段</th><th>不确定性（bit）</th><th>产线确认</th><th>孪生确认</th><th>知识梯度 KG(*)</th><th>期望增益（pp/题）</th></tr></thead><tbody>' +
           gaps.map(function (g) { return "<tr><td>" + esc(g.name) + "</td><td>" + esc(lbl("stages", g.stage)) + '</td><td class="num">' + g.entropy + '</td><td class="num">' + g.real + '</td><td class="num">' + g.sandbox + '</td><td class="num">' + g.kg + '</td><td class="num"><b>' + g.voi + "</b></td></tr>"; }).join("") + "</tbody></table></div></div>";
-        bindRun();
+        bindRows(); bindRun();
       });
     });
     if (tab === "continual") return Promise.all([api("learning/curve"), api("learning/edges"), api("learning/events?limit=60"), api("memory/hotspots")]).then(function (r) {
@@ -538,30 +556,19 @@
       document.getElementById("bt-run").onclick = function () { post("learning/backtest").then(function () { toast("已重新回放"); route(); }).catch(function (e) { toast(e.message); }); };
       bindRun();
     });
-    return Promise.all([api("memory"), api("learning/edges"), api("memory/hotspots"), api("learning/weights")]).then(function (r) {
-      var mem = r[0], edges = r[1], hs = r[2], W = r[3], active = mem.filter(function (b) { return b.status === "active"; }).length;
-      var learned = edges.filter(function (e) { return e.confirmed + e.confirmed_sandbox + e.refuted > 0; }).length;
-      view.innerHTML = head + '<div class="mem-parts">' +
-        '<a class="mem-part" href="#/evolution?tab=continual"><b>根因先验</b><span>本厂各症状下，哪些根因更常见</span><em>' + learned + " 条边被真实或孪生案例更新</em></a>" +
-        '<a class="mem-part" href="#/evolution?tab=continual"><b>机台热点</b><span>哪类根因常出在哪台机台</span><em>' + hs.length + " 个热点</em></a>" +
-        '<a class="mem-part" href="#/evolution?tab=overview"><b>证据权重</b><span>共性分析、FDC 等证据各该信多少</span><em>' + (W.current ? "当前版本基于 " + W.current.n + " 个样本" : "样本不足 20 个，尚未学习") + "</em></a>" +
-        '<div class="mem-part on"><b>流程与教训</b><span>文字形式的经验，带适用条件</span><em>' + active + " 条生效 / 共 " + mem.length + " 条</em></div></div>" +
-        '<div class="panel"><h2>流程与教训（下表）</h2><p class="muted small" style="margin-top:-6px">前三类记忆是数字，分别在“持续学习”和“概览”里看；这里是文字形式的经验。执行 agent 只在验证判定之后写入；分析同症状的新案例时，最多调取 5 条生效条目放进推理和 8D 报告。通过次数多的条目更靠前，失败多的会被自动停用，也可以手动停用。</p>' + memoryTable(mem) + "</div>";
-      bindMemoryButtons(); bindRun();
-    });
   }
 
   // ── 改进周期 / 审计 ────────────────────────────────────
   function pageCycles() {
     return api("improvement/cycles").then(function (cs) {
-      view.innerHTML = '<div class="page-head"><h1>改进周期</h1><span class="muted small">DBOS 定时每晚运行（同时重拟合证据权重）；也可在对话里说「运行改进周期」</span><span class="spacer"></span><button class="btn" id="run-cycle">▶ 立即运行</button></div>' +
+      view.innerHTML = '<div class="page-head"><h1>改进周期</h1><span class="badge">' + cs.length + ' 次</span><span class="muted small">DBOS 定时复盘并重拟合证据权重（演示历史为每月一次）；也可在对话里说「运行改进周期」</span><span class="spacer"></span><button class="btn" id="run-cycle">▶ 立即运行</button></div>' +
         (cs.map(function (c, i) { return '<div class="panel" style="margin-bottom:12px">' + (i === 0 ? md(c.summary_md) : "<details><summary><b>#" + c.id + "</b> " + dt(c.created_at) + " · " + esc(c.trigger) + "</summary>" + md(c.summary_md) + "</details>") + "</div>"; }).join("") || '<div class="panel empty">暂无</div>');
       document.getElementById("run-cycle").onclick = function (e) { e.target.disabled = true; post("improvement/run").then(function () { toast("完成"); route(); }).catch(function (err) { toast(err.message); e.target.disabled = false; }); };
     });
   }
   function pageAudit() {
-    return api("audit?limit=200").then(function (rows) {
-      view.innerHTML = '<div class="page-head"><h1>审计日志</h1><span class="muted small">谁在什么时候批准了什么：关案、记忆启停、RSI 会话、改进周期</span></div><div class="panel table-wrap"><table><thead><tr><th>时间</th><th>操作者</th><th>动作</th><th>对象</th><th>详情</th></tr></thead><tbody>' +
+    return api("audit?limit=1500").then(function (rows) {
+      view.innerHTML = '<div class="page-head"><h1>审计日志</h1><span class="badge">' + rows.length + " 条</span>" + (rows.length ? '<span class="muted small">' + d10(rows[rows.length - 1].created_at) + " 至 " + d10(rows[0].created_at) + "</span>" : "") + '<span class="muted small">谁在什么时候做了什么：建案、分析、CAPA、关案批准、产线变更同步、证据权重更新、RSI 会话、改进周期</span></div><div class="panel table-wrap"><table><thead><tr><th>时间</th><th>操作者</th><th>动作</th><th>对象</th><th>详情</th></tr></thead><tbody>' +
         rows.map(function (r) { return '<tr><td class="muted num">' + dt(r.created_at) + "</td><td>" + esc(r.actor) + '</td><td><span class="badge">' + esc(r.action) + "</span></td><td>" + esc(r.target) + '</td><td class="muted small">' + esc(JSON.stringify(r.detail)) + "</td></tr>"; }).join("") + "</tbody></table></div>";
     });
   }
@@ -599,9 +606,9 @@
   }
   var LIVE = null, STATE = { workspace: { focusCaseId: null, openPage: null } }, BUSY = false;
   var PROMPTS = [
-    { t: "分析 KZ-0126", m: "rca", d: "国产 DUV 套刻超规：看学到的知识怎样改变首位根因" },
-    { t: "分析 KZ-0121", m: "rca", d: "刻蚀层边缘环形失效：晶圆图 + 共性分析 + FDC" },
-    { t: "确认 KZ-0121 根因是刻蚀腔聚焦环磨损", m: "rca", d: "人在回路：你批准后才关案，产线确认写入记忆" },
+    { t: "分析 KZ-0138", m: "rca", d: "国产 DUV 套刻超规：看学到的知识怎样改变首位根因" },
+    { t: "分析 KZ-0133", m: "rca", d: "刻蚀层边缘环形失效：晶圆图 + 共性分析 + FDC" },
+    { t: "确认 KZ-0133 根因是刻蚀腔聚焦环磨损", m: "rca", d: "人在回路：你批准后才关案，产线确认写入记忆" },
     { t: "启动一次自我进化会话", m: "rsi", d: "三个 agent 在数字孪生里练习：广度 → 证据校准 → 深度" },
     { t: "学习效果怎么样？", m: "coach", d: "用数字总结 RSI 学习和持续学习的效果" },
     { t: "Fab A 刻蚀层 CP 良率下降，失效集中在晶圆外圈，良率=88%", m: "rca", d: "描述一个新问题：自动建案并分析" }];
@@ -659,14 +666,14 @@
     var pend = !!CHAT.pending;
     document.getElementById("chat-form").classList.toggle("blocked", pend);
     document.getElementById("chat-send").classList.toggle("busy", BUSY);
-    input.placeholder = pend ? "请先在上方批准或取消待处理的关案请求" : CHAT.messages.length ? "继续追问，或输入「确认 KZ-0121 根因是…」" : "描述现场问题，或输入「分析 KZ-0121」";
+    input.placeholder = pend ? "请先在上方批准或取消待处理的关案请求" : CHAT.messages.length ? "继续追问，或输入「确认 KZ-0133 根因是…」" : "描述现场问题，或输入「分析 KZ-0133」";
     modeSel.value = CHAT.mode || "rca";
   }
   function loadAttention() {
     Promise.all([api("kpis"), api("rsi/sessions")]).then(function (r) {
       var k = r[0].kpis, s = (r[1][0] || {}).summary || {}, el = document.getElementById("attention"); if (!el) return;
       el.innerHTML = '<a class="att" href="#/cases?status=open">📂 进行中案例 <b>' + k.cases_open + "</b></a>" + '<a class="att' + (k.capa_overdue ? " warn" : "") + '" href="#/capa?overdue=1">⏰ 逾期 CAPA <b>' + k.capa_overdue + "</b></a>" +
-        (s.hit1_after != null ? '<a class="att ok" href="#/evolution?tab=rsi">🧬 最近一次 RSI 学习 <b>' + s.hit1_before + " → " + s.hit1_after + "</b></a>" : "");
+        (s.hit1_after != null ? '<a class="att ok" href="#/evolution?tab=rsi">🧬 最近一次 RSI 学习 <b>' + hitPlain(s) + "</b></a>" : "");
     }).catch(function () {});
   }
 

@@ -207,15 +207,29 @@ def refute(edges: dict[str, dict[str, EdgeState]], symptom: str, code: str, weig
             "after": round(share(table, code), 4), "detail": f"CAPA 验证无效，否定：{e.name}"}
 
 
-def prequential(cases: list[dict]) -> dict:
+FORGET_KEEP = 0.2  # 产线变更后，受影响症状学到的份额保留的比例
+
+
+def forget_table(table: dict[str, "EdgeState"], keep: float = FORGET_KEEP) -> None:
+    for e in table.values():
+        e.alpha = e.alpha0 + (e.alpha - e.alpha0) * keep
+
+
+def prequential(cases: list[dict], changes: list[tuple[str, str]] | None = None) -> dict:
     """预序评估（先预测、后学习）：按关案时间回放，比较“持续学习”与“冻结在教科书先验”的命中率。
 
     cases: [{"code", "time", "symptom", "cause_code", "evidence"}]，按时间排序。
+    changes: [(时间, 症状)] 产线变更；与线上一致，变更生效时对该症状做部分遗忘。
     """
     learned, frozen = prior_edges(), prior_edges()
     hotspots: dict[tuple[str, str], float] = {}
     points, hits_l, hits_f, rr_l, rr_f = [], [], [], [], []
+    pending = sorted(changes or [])
     for i, c in enumerate(cases, 1):
+        while pending and pending[0][0] <= c["time"]:
+            _, sym = pending.pop(0)
+            if sym in learned:
+                forget_table(learned[sym])
         rl = [h.cause_code for h in rank(c["evidence"], c["symptom"], learned, hotspots)]
         rf = [h.cause_code for h in rank(c["evidence"], c["symptom"], frozen)]
         truth = c["cause_code"]

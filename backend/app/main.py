@@ -25,7 +25,7 @@ from .config import get_settings
 from .db import init_db, session_scope
 from .improvement import run_cycle
 from .mcp_server import mcp
-from .seed import seed
+from .seed import finish_in_progress, seed
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("kaizen")
@@ -41,10 +41,11 @@ async def lifespan(app: FastAPI):
     durable.launch()  # 恢复上次中断的分析工作流
     if s.seed_demo:
         with session_scope() as db:
-            n = seed(db)
+            n = await seed(db)
         if n:
+            await finish_in_progress(session_scope)
             await run_cycle(trigger="seed")
-            log.info("已写入 %s 个演示案例（含约 18 个月学习历史）并完成首个改进周期", n)
+            log.info("已写入 %s 个演示案例（约 18 个月的按时间回放历史）并完成今天的改进周期", n)
             if s.rsi_on_startup:
                 from .rsi.workflow import run_benchmark, start_session
 

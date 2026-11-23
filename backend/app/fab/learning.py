@@ -59,12 +59,17 @@ def memory_for(db: Session, symptom: str, limit: int = 5) -> list[MemoryItem]:
     return sorted(rows, key=lambda b: -(b.passes - b.fails))[:limit]
 
 
-def run_backtest(db: Session, trigger: str = "manual") -> BacktestRun:
+def run_backtest(db: Session, trigger: str = "manual", when=None) -> BacktestRun:
     cases = db.exec(select(Case).where(Case.status == "closed", Case.cause_code != "").order_by(col(Case.closed_at))).all()
     payload = [{"code": c.code, "time": c.closed_at.isoformat() if c.closed_at else "", "symptom": c.symptom,
                 "cause_code": c.cause_code, "evidence": c.evidence or {}} for c in cases if c.symptom in CAUSES]
-    result = prequential(payload)
+    from ..models import AuditLog
+
+    changes = [(r.created_at.isoformat(), r.target) for r in db.exec(select(AuditLog).where(AuditLog.action == "twin.update")).all()]
+    result = prequential(payload, changes)
     run = BacktestRun(trigger=trigger, points=result["points"], summary=result["summary"])
+    if when:
+        run.created_at = when
     db.add(run)
     db.commit()
     db.refresh(run)

@@ -6,7 +6,11 @@
 探索时课程 agent 只能指定“症状 + 难度 + 是否加干扰”，孪生按真实规律抽取根因并生成 MES/FDC/晶圆图数据；
 验证时只返回“按提议整改后同一时段的指标”（干预反馈），从不直接给出答案。
 
-真实部署时应当用本厂历史数据校准这两张表（或接入工艺仿真），否则学到的是孪生而不是产线——
+产线不是一成不变的：CHANGES 记录了过去一年的产线变更（换供应商、新机台导入、PM 程序调整…），
+变更之前对应症状的根因分布不同。孪生按“时段”（era）同步这些变更，所以每个月的 RSI 会话都有新东西可学；
+在线会话总是面对“现在”的孪生（CURRENT_ERA）。
+
+真实部署时应当用本厂历史数据校准这些表（或接入工艺仿真），否则学到的是孪生而不是产线——
 因此孪生验证的记忆权重低于产线验证（见 rsi/memory.py）。
 """
 
@@ -52,6 +56,58 @@ HOTSPOTS = {
 DIFFICULTY = {"easy": (0.7, 1.0), "medium": (0.25, 0.45), "hard": (0.08, 0.2)}
 
 
+@dataclass(frozen=True)
+class Change:
+    """一次产线变更：days_ago 天前生效；生效之前该症状的根因分布是 before（之后是 SITE_TRUTH 中的“现在”）。"""
+
+    days_ago: int
+    label: str
+    symptom: str
+    before: dict
+
+
+# 过去一年的产线变更（虚构），按时间先后排列。days_ago 相对于演示数据写入的日期。
+CHANGES = [
+    Change(320, "测试厂 B 更换 FT 测试座供应商，接触电阻偏高", "TEST_VMIN",
+           {"SOCKET_CONTACT": .25, "PROCESS_SLOW_CORNER": .55, "TEST_PROGRAM": .20}),
+    Change(290, "CVD 腔体 DEP-03 换新喷淋头，中心偏厚问题减少", "WM_CENTER",
+           {"WET_CENTER_RESIDUE": .35, "CVD_SHOWERHEAD": .50, "IMP_DOSE_CENTER": .15}),
+    Change(262, "封测厂 B 切换 ABF 基板供应商（CTE 偏大）", "PKG_WARP",
+           {"SUBSTRATE_CTE": .25, "BOND_TEMP_UNIFORM": .45, "CURE_PROFILE": .30}),
+    Change(230, "底部填充胶换型号，点胶窗口变窄", "PKG_VOID",
+           {"UF_DISPENSE": .25, "REFLOW_PROFILE": .50, "FLUX_RESIDUE": .25}),
+    Change(205, "CMP 保持环改用长寿命型号后，刻蚀聚焦环成为边缘失效的主因", "WM_EDGE",
+           {"ETCH_FOCUS_RING": .40, "CMP_RETAINING_RING": .35, "ALD_EDGE_TEMP": .15, "LITHO_EBR": .10}),
+    Change(170, "整机 BMC 固件更新上电时序", "SLT_HANG",
+           {"POWER_SEQ": .25, "HBM_TRAINING": .55, "TIM_COVERAGE": .20}),
+    Change(143, "HBM3E 改为 12 层堆叠，TCB 共面度窗口收紧", "HBM_OPEN",
+           {"TCB_COPLANARITY": .15, "NCF_LOT": .60, "HBM_INCOMING": .25}),
+    Change(105, "液冷快接头换供应商，管路接头扭矩规范调整", "RACK_LEAK",
+           {"FITTING_TORQUE": .30, "QD_ORING": .55, "MANIFOLD_WELD": .15}),
+    Change(78, "老化板 BI-01 换用新型插座", "BI_EARLY",
+           {"BI_SOCKET_HEAT": .25, "GATE_OXIDE": .50, "ESD_HANDLING": .25}),
+    Change(41, "Fab D 新导入一台国产 DUV 扫描机 SCN-03", "OVL_DRIFT",
+           {"SCANNER_MATCHING": .05, "LENS_HEATING": .55, "R2R_MODEL": .25, "WAFER_WARP": .15}),
+    Change(11, "清洗机 WET-02 更换机械手后对位偏移", "WM_SCRATCH",
+           {"ROBOT_SCRATCH": .30, "CMP_SLURRY_LPC": .45, "CMP_DISK": .25}),
+]
+CURRENT_ERA = len(CHANGES)
+
+
+def era_at(days_ago: float) -> int:
+    """days_ago 天前处在第几个时段（= 已生效的变更条数）。"""
+    return sum(1 for c in CHANGES if days_ago <= c.days_ago)
+
+
+def truth_for_era(era: int | None = None) -> dict[str, dict[str, float]]:
+    """某个时段的真实根因分布：尚未生效的变更，对应症状用变更前的分布。"""
+    era = CURRENT_ERA if era is None else era
+    t = {s: dict(d) for s, d in SITE_TRUTH.items()}
+    for c in reversed(CHANGES[era:]):
+        t[c.symptom] = dict(c.before)
+    return t
+
+
 def _cause_obj(symptom: str, code: str):
     return next(c for c in CAUSES[symptom] if c.code == code)
 
@@ -91,13 +147,15 @@ class Task:
 
 
 class FabTwin:
-    def __init__(self, now: datetime | None = None):
+    def __init__(self, now: datetime | None = None, era: int | None = None):
         self.now = now or datetime.now(timezone.utc)
+        self.era = CURRENT_ERA if era is None else era
+        self.truth = truth_for_era(self.era)
 
     def make_task(self, spec: TaskSpec, seed: int, force_cause: str | None = None) -> Task:
         """force_cause 仅供构造分层测试集使用；练习时根因永远按本厂真实分布抽取。"""
         rng = random.Random(seed * 7919 + 17)
-        dist = SITE_TRUTH[spec.symptom]
+        dist = self.truth[spec.symptom]
         cause = rng.choices(list(dist), weights=list(dist.values()))[0]
         if force_cause in dist:
             cause = force_cause
@@ -141,9 +199,9 @@ GATE_PER_SYMPTOM = 10  # 验收门面板 120 题
 _CACHE: dict[str, list[dict]] = {}
 
 
-def _stratified(per: int, seed0: int) -> list[dict]:
-    twin, out = FabTwin(datetime(2026, 11, 1, tzinfo=timezone.utc)), []
-    for si, (sym, dist) in enumerate(SITE_TRUTH.items()):
+def _stratified(per: int, seed0: int, era: int | None = None) -> list[dict]:
+    twin, out = FabTwin(datetime(2026, 11, 1, tzinfo=timezone.utc), era=era), []
+    for si, (sym, dist) in enumerate(twin.truth.items()):
         quota = {c: max(1, round(per * p)) for c, p in dist.items()}
         j = 0
         for cause, n in quota.items():
@@ -156,22 +214,28 @@ def _stratified(per: int, seed0: int) -> list[dict]:
     return out
 
 
-def eval_set() -> list[dict]:
+def eval_set(era: int | None = None) -> list[dict]:
     """留出测试集（分层）：每个症状 40 道题，根因按本厂真实分布配比，中等/困难各半；种子与练习、验收门都不重叠。
 
     分层是为了让分数代表“在本厂真实分布下的期望命中率”，而不是少数几道随机题的运气。测试集只用于报告，
     任何学习步骤（包括验收门）都看不到它。
     """
-    if "eval" not in _CACHE:
-        _CACHE["eval"] = _stratified(EVAL_PER_SYMPTOM, 900_000)
-    return _CACHE["eval"]
+    key = f"eval:{CURRENT_ERA if era is None else era}"
+    if key not in _CACHE:
+        _CACHE[key] = _stratified(EVAL_PER_SYMPTOM, 900_000, era)
+    return _CACHE[key]
 
 
-def gate_panel() -> list[dict]:
+def gate_panel(era: int | None = None) -> list[dict]:
     """验收门面板（封存的验证集，与测试集不重叠）：每次想更新证据权重，都必须在这里“不退步”才会被采纳。
 
     依据：OpsHarness（arXiv 2608.25661）中去掉验收门的自我进化版本比不进化还差；SEAL（2607.24300）同理。
     """
-    if "gate" not in _CACHE:
-        _CACHE["gate"] = _stratified(GATE_PER_SYMPTOM, 960_000)
-    return _CACHE["gate"]
+    key = f"gate:{CURRENT_ERA if era is None else era}"
+    if key not in _CACHE:
+        _CACHE[key] = _stratified(GATE_PER_SYMPTOM, 960_000, era)
+    return _CACHE[key]
+
+
+assert all(set(c.before) == set(SITE_TRUTH[c.symptom]) for c in CHANGES)  # noqa: S101
+assert [c.days_ago for c in CHANGES] == sorted((c.days_ago for c in CHANGES), reverse=True)  # noqa: S101

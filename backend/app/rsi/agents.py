@@ -29,7 +29,7 @@ class CurriculumPick(BaseModel):
     symptom: str
     difficulty: Literal["easy", "medium", "hard"] = "medium"
     decoy_pm: bool = False
-    variant: Literal["前置技能", "信息量变体", "失败驱动", "压力测试", "证据校准"] = "信息量变体"
+    variant: Literal["前置技能", "信息量变体", "失败驱动", "压力测试", "证据校准", "变更校准"] = "信息量变体"
     rationale: str = ""
 
 
@@ -140,16 +140,20 @@ class Curriculum:
         refined = await self._llm_refine([spec], knowledge_gaps(mem, history), "depth", 1)
         return refined[0] if refined else spec
 
-    def calibration(self, mem: MemoryState, history: list[dict], n: int, rng) -> list[TaskSpec]:
-        """校准批：按信息价值分配症状，难度混合（易 2 : 中 4 : 难 4），主要用于学习“每类证据该信多少”。"""
+    def calibration(self, mem: MemoryState, history: list[dict], n: int, rng, focus: set[str] | None = None) -> list[TaskSpec]:
+        """校准批：按信息价值分配症状，难度混合（易 2 : 中 4 : 难 4），主要用于学习“每类证据该信多少”。
+
+        focus：上次会话之后发生产线变更的症状，出题比例提高到 4 倍（这部分校准题也会更新先验）。
+        """
         gaps = knowledge_gaps(mem, history)
-        weights = [g["voi"] + 0.5 for g in gaps]
+        weights = [(g["voi"] + 0.5) * (4 if focus and g["symptom"] in focus else 1) for g in gaps]
         specs = []
         for i in range(n):
             g = rng.choices(gaps, weights=weights)[0]
             diff = rng.choices(["easy", "medium", "hard"], weights=[2, 4, 4])[0]
-            specs.append(TaskSpec(g["symptom"], diff, rng.random() < 0.2, "证据校准",
-                                  f"校准批：学习各类证据的可信度（{g['name']}，信息价值 {g['voi']:.2f}）"))
+            changed = bool(focus and g["symptom"] in focus)
+            specs.append(TaskSpec(g["symptom"], diff, rng.random() < 0.2, "变更校准" if changed else "证据校准",
+                                  f"{'产线变更后重新校准' if changed else '校准批：学习各类证据的可信度'}（{g['name']}，信息价值 {g['voi']:.2f}）"))
         return specs
 
     async def _llm_refine(self, specs: list[TaskSpec], gaps: list[dict], phase: str, n: int) -> list[TaskSpec] | None:

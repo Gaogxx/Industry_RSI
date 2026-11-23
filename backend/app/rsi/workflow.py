@@ -26,7 +26,7 @@ from .agents import Curriculum, Executor, Verifier, knowledge_gaps
 from .engine import (BREADTH, CAL_ATTEMPTS, CAL_TASKS, CAL_WAVE, CONCURRENCY, MAX_ATTEMPTS, MAX_DEPTH, PATIENCE, REFIT_EVERY,
                      cold_start_benchmark, consolidate, evaluate, practice)
 from .memory import load_memory, refit_and_store, save_memory
-from .twin import FabTwin, TaskSpec
+from .twin import CURRENT_ERA, FabTwin, TaskSpec
 
 STREAM = "kaizen"
 LIVE_SANDBOX_WEIGHT = 0.5
@@ -75,11 +75,16 @@ async def s_breadth_plan(session_id: int) -> list[dict]:
     return [s.as_dict() for s in specs]
 
 
+def _focus(db, session_id: int) -> set[str]:
+    sess = db.get(RSISession, session_id)
+    return {c["symptom"] for c in (sess.config or {}).get("changes", [])}
+
+
 @DBOS.step()
 async def s_cal_plan(session_id: int) -> list[dict]:
     with session_scope() as db:
-        mem, hist = load_memory(db), _history(db, session_id)
-    specs = _curriculum().calibration(mem, hist, CAL_TASKS, random.Random(session_id * 7919))
+        mem, hist, focus = load_memory(db), _history(db, session_id), _focus(db, session_id)
+    specs = _curriculum().calibration(mem, hist, CAL_TASKS, random.Random(session_id * 7919), focus=focus)
     await DBOS.write_stream_async(STREAM, {"type": "phase", "phase": "CAL",
                                            "detail": f"证据校准：{len(specs)} 道低成本练习（每波 {CAL_WAVE} 道并行），"
                                                      "只学“每类证据该信多少”，不改动产线先验"})
@@ -116,6 +121,7 @@ async def s_wave(session_id: int, phase: str, specs: list[dict], seq: int, refit
     with session_scope() as db:
         mem = load_memory(db)
         base = len(db.exec(select(RSITask).where(RSITask.session_id == session_id)).all())
+        focus = _focus(db, session_id)
     snapshot = mem.clone()
     seed_base = 2_000_000 + session_id * 1000  # 与测试集（90 万段）、验收门（96 万段）的种子不重叠
     attempts = CAL_ATTEMPTS if phase == "CAL" else MAX_ATTEMPTS
@@ -129,7 +135,9 @@ async def s_wave(session_id: int, phase: str, specs: list[dict], seq: int, refit
                            weak=r["weak"])
             db.add(task)
             db.flush()
-            events, delta, new_items = consolidate(mem, r, ref=task.id, weight=LIVE_SANDBOX_WEIGHT, examples_only=phase == "CAL")
+            changed = r["spec"]["symptom"] in focus and r["symptom"] in focus
+            events, delta, new_items = consolidate(mem, r, ref=task.id, weight=LIVE_SANDBOX_WEIGHT,
+                                                   examples_only=phase == "CAL" and not changed)
             task.memory_changes = events
             db.add(task)
             for e in events:
@@ -172,7 +180,9 @@ async def s_finish(session_id: int, status: str = "done") -> dict:
                         "hit1_before": curve[0]["hit1"] if curve else None, "hit1_after": curve[-1]["hit1"] if curve else None,
                         "partial_before": curve[0]["partial"] if curve else None,
                         "partial_after": curve[-1]["partial"] if curve else None,
-                        "memory_items": curve[-1]["memory"] if curve else None}
+                        "memory_items": curve[-1]["memory"] if curve else None,
+                        "plateau": bool(curve) and abs(curve[-1]["hit1"] - curve[0]["hit1"]) < 0.25,
+                        "plateau_reason": "no_gap" if (sess.config or {}).get("changes") else "no_change"}
         db.add(sess)
         db.add(AuditLog(actor=sess.trigger, action="kaizen.session", target=f"RSI-{session_id}", detail=sess.summary))
         db.commit()
@@ -227,11 +237,20 @@ async def rsi_workflow(session_id: int) -> dict:
         raise
 
 
+def changes_since(db, since) -> list[dict]:
+    """上次会话之后同步到孪生的产线变更（审计日志 twin.update）。"""
+    q = select(AuditLog).where(AuditLog.action == "twin.update").order_by(col(AuditLog.created_at))
+    rows = db.exec(q.where(AuditLog.created_at > since) if since else q).all()
+    return [{"label": r.detail.get("change", ""), "symptom": r.target, "at": r.created_at.isoformat()} for r in rows]
+
+
 async def start_session(trigger: str = "manual", return_handle: bool = False):
     with session_scope() as db:
+        prev = db.exec(select(RSISession).order_by(col(RSISession.created_at).desc())).first()
         sess = RSISession(trigger=trigger, config={"breadth": BREADTH, "concurrency": CONCURRENCY, "cal_tasks": CAL_TASKS,
                                                    "cal_wave": CAL_WAVE, "max_depth": MAX_DEPTH, "patience": PATIENCE,
-                                                   "sandbox_weight": LIVE_SANDBOX_WEIGHT})
+                                                   "sandbox_weight": LIVE_SANDBOX_WEIGHT, "era": CURRENT_ERA,
+                                                   "changes": changes_since(db, prev.created_at if prev else None)})
         db.add(sess)
         db.commit()
         db.refresh(sess)

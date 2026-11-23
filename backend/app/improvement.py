@@ -29,12 +29,12 @@ def _cause_tool(c: Case) -> str | None:
     return None
 
 
-def compute_kpis(db: Session) -> dict:
+def compute_kpis(db: Session, now=None) -> dict:
     cases = db.exec(select(Case)).all()
     actions = db.exec(select(Action)).all()
     analyses = db.exec(select(Analysis)).all()
     feedback = db.exec(select(Feedback)).all()
-    now = utcnow()
+    now = now or utcnow()
     closed = [c for c in cases if c.status == "closed" and c.closed_at]
     mttr = sum((c.closed_at - c.created_at).total_seconds() for c in closed) / 86400 / len(closed) if closed else 0
     finished = [a for a in actions if a.completed_at and a.due_date]
@@ -109,13 +109,13 @@ def tool_hotspots(db: Session) -> list[dict]:
                    for (t, cc, name), v in hits.items() if len(v) >= 2), key=lambda x: -x["count"])
 
 
-def learning_snapshot(db: Session) -> dict:
+def learning_snapshot(db: Session, now=None) -> dict:
     from .models import BacktestRun
 
     run = db.exec(select(BacktestRun).order_by(col(BacktestRun.id).desc())).first()
     edges = edges_view(db)
     shifts = sorted((e for e in edges if e["confirmed"] or e["learned"]), key=lambda e: -abs(e["delta"]))[:5]
-    since = utcnow() - timedelta(days=30)
+    since = (now or utcnow()) - timedelta(days=30)
     return {
         "backtest": run.summary if run else None,
         "backtest_at": run.created_at.isoformat() if run else None,
@@ -147,37 +147,45 @@ def _findings(db: Session, kpis: dict, pareto: list[dict], learning: dict) -> li
         out.append("帕累托：已确认根因集中在「" + "、".join(p["label"] for p in vital) + f"」（{vital[-1]['cum_pct']:.0%}）。")
     if kpis["capa_overdue"]:
         out.append(f"有 {kpis['capa_overdue']} 条 CAPA 已逾期，需在周例会上逐条确认责任人。")
-    low = [a for a in db.exec(select(Analysis)).all() if a.hypotheses and a.hypotheses[0].get("posterior", 1) < 0.5]
+    open_ids = {c.id for c in db.exec(select(Case).where(Case.status != "closed")).all()}
+    low = [a for a in db.exec(select(Analysis)).all()
+           if a.case_id in open_ids and a.hypotheses and a.hypotheses[0].get("posterior", 1) < 0.5]
     if low:
-        out.append(f"{len(low)} 份分析首位根因后验 < 50%：证据不足时优先执行系统建议的鉴别验证，并补齐 FDC/物料批次数据。")
+        out.append(f"进行中案例有 {len(low)} 份分析首位根因后验 < 50%：证据不足时优先执行系统建议的鉴别验证，并补齐 FDC/物料批次数据。")
     if learning.get("memory_retired"):
         out.append(f"可进化记忆已自动停用 {learning['memory_retired']} 条被多次否定的条目（失败次数超过成功次数 2 次以上）。")
     return out
 
 
+def build_cycle(db: Session, trigger: str, now=None, actor: str | None = None) -> ImprovementCycle:
+    """一次改进周期（now 用于按时间顺序回放演示历史：只看当时已经发生的数据）。"""
+    when = now or utcnow()
+    run_backtest(db, trigger=f"cycle:{trigger}", when=now)
+    kpis, pareto, learning = compute_kpis(db, now), compute_pareto(db), learning_snapshot(db, now)
+    findings = _findings(db, kpis, pareto, learning)
+    fmt = lambda v: "-" if v is None else (f"{v:.0%}" if isinstance(v, float) and v <= 1 else str(v))  # noqa: E731
+    bt = learning.get("backtest") or {}
+    md = [
+        f"# 持续改进周期复盘（{when:%Y-%m-%d %H:%M} UTC，触发：{trigger}）", "",
+        "| 指标 | 数值 |", "|---|---|",
+        f"| 案例总数 / 未关闭 | {kpis['cases_total']} / {kpis['cases_open']} |",
+        f"| 平均关闭周期 MTTR | {kpis['mttr_days']} 天 |",
+        f"| CAPA 按期率 / 有效率 | {fmt(kpis['capa_on_time_rate'])} / {fmt(kpis['capa_effectiveness'])} |",
+        f"| 逾期 CAPA | {kpis['capa_overdue']} |",
+        f"| 复发率（同根因同机台 180 天内） | {fmt(kpis['recurrence_rate'])} |",
+        f"| 首位根因命中率：持续学习 / 冻结先验 | {fmt(bt.get('hit1_learning'))} / {fmt(bt.get('hit1_frozen'))} |",
+        f"| 近 30 天学习事件 | {learning['events_30d']} |",
+        "", "## 关键发现", *[f"{i}. {f}" for i, f in enumerate(findings, 1)],
+    ]
+    cycle = ImprovementCycle(trigger=trigger, kpis=kpis, pareto=pareto, learning=learning, findings=findings,
+                             summary_md="\n".join(md), created_at=when)
+    db.add(cycle)
+    audit(db, actor or ("system" if trigger == "schedule" else trigger), "improvement.run", "", when=now, findings=len(findings))
+    db.commit()
+    db.refresh(cycle)
+    return cycle
+
+
 async def run_cycle(trigger: str = "manual") -> ImprovementCycle:
     with session_scope() as db:
-        run_backtest(db, trigger=f"cycle:{trigger}")
-        kpis, pareto, learning = compute_kpis(db), compute_pareto(db), learning_snapshot(db)
-        findings = _findings(db, kpis, pareto, learning)
-        fmt = lambda v: "-" if v is None else (f"{v:.0%}" if isinstance(v, float) and v <= 1 else str(v))  # noqa: E731
-        bt = learning.get("backtest") or {}
-        md = [
-            f"# 持续改进周期复盘（{utcnow():%Y-%m-%d %H:%M} UTC，触发：{trigger}）", "",
-            "| 指标 | 数值 |", "|---|---|",
-            f"| 案例总数 / 未关闭 | {kpis['cases_total']} / {kpis['cases_open']} |",
-            f"| 平均关闭周期 MTTR | {kpis['mttr_days']} 天 |",
-            f"| CAPA 按期率 / 有效率 | {fmt(kpis['capa_on_time_rate'])} / {fmt(kpis['capa_effectiveness'])} |",
-            f"| 逾期 CAPA | {kpis['capa_overdue']} |",
-            f"| 复发率（同根因同机台 180 天内） | {fmt(kpis['recurrence_rate'])} |",
-            f"| 首位根因命中率：持续学习 / 冻结先验 | {fmt(bt.get('hit1_learning'))} / {fmt(bt.get('hit1_frozen'))} |",
-            f"| 近 30 天学习事件 | {learning['events_30d']} |",
-            "", "## 关键发现", *[f"{i}. {f}" for i, f in enumerate(findings, 1)],
-        ]
-        cycle = ImprovementCycle(trigger=trigger, kpis=kpis, pareto=pareto, learning=learning, findings=findings,
-                                 summary_md="\n".join(md))
-        db.add(cycle)
-        audit(db, "system" if trigger == "schedule" else trigger, "improvement.run", "", findings=len(findings))
-        db.commit()
-        db.refresh(cycle)
-        return cycle
+        return build_cycle(db, trigger)

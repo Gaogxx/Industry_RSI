@@ -163,7 +163,7 @@ def _agui(client, body):
 
 
 def test_agui_chat_events(client):
-    evs = _agui(client, {"threadId": "t", "runId": "r", "messages": [{"id": "1", "role": "user", "content": "分析 KZ-0125"}],
+    evs = _agui(client, {"threadId": "t", "runId": "r", "messages": [{"id": "1", "role": "user", "content": "分析 KZ-0137"}],
                          "forwardedProps": {"mode": "rca"}})
     types = [e["type"] for e in evs]
     assert types[0] == "RUN_STARTED" and types[-1] == "RUN_FINISHED"
@@ -183,7 +183,7 @@ def test_agui_rsi_stream_uses_subagents_and_state_deltas(client):
 
 
 def test_agui_analysis_opens_case_panel(client):
-    evs = _agui(client, {"threadId": "t3", "runId": "r3", "messages": [{"id": "1", "role": "user", "content": "分析 KZ-0125"}],
+    evs = _agui(client, {"threadId": "t3", "runId": "r3", "messages": [{"id": "1", "role": "user", "content": "分析 KZ-0137"}],
                          "forwardedProps": {"mode": "rca"}})
     acts = [e for e in evs if e["type"] == "ACTIVITY_SNAPSHOT"]
     assert acts and acts[0]["activityType"] == "kaizen.case" and acts[0]["content"]["open"]
@@ -227,4 +227,5 @@ def test_agui_rsi_stream_reports_calibration_and_gate(client):
     assert steps == ["广度递归自探索 BRS", "证据校准 CAL", "深度递归自探索 DRS"]
     assert any(e["type"] == "ACTIVITY_DELTA" and e["activityType"] == "kaizen.rsi" for e in evs)
     w = client.get("/api/learning/weights").json()
-    assert w["current"] and w["by_source"].get("production", 0) >= 1 and w["by_source"].get("rsi", 0) >= 1  # 两条来源写同一套权重
+    prod = w["by_source"].get("production", 0) + w["by_source"].get("nightly", 0)
+    assert w["current"] and prod >= 1 and w["by_source"].get("rsi", 0) >= 1  # 两条来源写同一套权重

@@ -7,7 +7,8 @@ from conftest import open_case
 
 def test_seeded_history_has_measurable_learning(client):
     k = client.get("/api/kpis").json()
-    assert k["kpis"]["cases_total"] == 126 and k["kpis"]["cases_closed"] == 120
+    assert k["kpis"]["cases_total"] == 138 and k["kpis"]["cases_closed"] == 120
+    assert {"分析中", "措施执行", "效果验证", "待分析"} <= {s for s, n in k["kpis"]["by_status"].items() if n}
     bt = k["learning"]["backtest"]
     assert bt["cases"] == 120 and bt["hit1_learning"] > bt["hit1_frozen"]
     curve = client.get("/api/learning/curve").json()["latest"]
@@ -17,7 +18,21 @@ def test_seeded_history_has_measurable_learning(client):
     assert fr["posterior"] > fr["prior"] + 0.2 and fr["confirmed"] >= 10
     mem = client.get("/api/memory").json()
     assert any(m["source"] in ("real", "both") for m in mem) and all("condition" in m for m in mem)
-    assert {e["kind"] for e in client.get("/api/learning/events?limit=2000").json()} >= {"confirm", "false_lead", "memory_add"}
+    assert {e["kind"] for e in client.get("/api/learning/events?limit=3000").json()} >= {"confirm", "false_lead", "memory_add", "drift"}
+
+
+def test_demo_history_spans_last_year(client):
+    """演示历史按时间回放：改进周期、RSI 会话、审计记录都从去年开始，而不是全部写在今天。"""
+    cycles = client.get("/api/improvement/cycles").json()
+    sessions = client.get("/api/rsi/sessions").json()
+    audit = client.get("/api/audit", params={"limit": 3000}).json()
+    assert len(cycles) >= 15 and min(c["created_at"] for c in cycles)[:4] == "2025"
+    assert len(sessions) >= 12 and min(s["created_at"] for s in sessions)[:4] == "2025"
+    assert min(a["created_at"] for a in audit)[:4] == "2025" and {"case.close", "twin.update", "kaizen.session"} <= {a["action"] for a in audit}
+    history = [s for s in sessions if s["trigger"] == "schedule"]
+    assert all(s["config"]["changes"] for s in history[:-1])  # 除第一次外，每次会话前都有产线变更同步到孪生
+    gains = [s["summary"]["hit1_after"] - s["summary"]["hit1_before"] for s in history]
+    assert sum(g > 0 for g in gains) >= len(gains) - 1 and min(gains) >= 0
 
 
 def test_durable_workflow_analysis_where_learning_changes_the_answer(client):

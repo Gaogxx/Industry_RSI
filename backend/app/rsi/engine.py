@@ -26,7 +26,7 @@ def evaluate(mem: MemoryState) -> dict:
     """在留出测试集上评估冻结的记忆：binary accuracy（首位命中）与 partial score（真因获得的后验概率）。"""
     hits, partial = 0, 0.0
     hw = mem.hotspot_weights()
-    data = eval_set()
+    data = eval_set(mem.era)
     for e in data:
         hyps = rank(e["evidence"], e["symptom"], mem.edges, hw, mem.weights)
         hits += bool(hyps and hyps[0].cause_code == e["truth"])
@@ -107,10 +107,11 @@ async def run_session(mem: MemoryState, *, mode: str = "v2", breadth: int = BREA
                       cal_tasks: int = CAL_TASKS, sandbox_weight: float = 0.5, cal_updates_prior: bool | None = None,
                       curriculum: Curriculum | None = None,
                       verifier: Verifier | None = None, commit: Commit | None = None, notify: Notify | None = None,
-                      twin: FabTwin | None = None) -> dict:
+                      twin: FabTwin | None = None, focus: set[str] | None = None) -> dict:
     """mode 见 MODES。sandbox_weight：孪生验证经验的权重。已有产线记忆时取 0.5（让位于真实确认）；新产线冷启动时取 1.0。
 
     cal_updates_prior：校准练习是否也更新先验。默认只在冷启动（没有产线历史、孪生是唯一知识来源）时更新。
+    focus：上次会话之后发生产线变更的症状。孪生已同步这些变更，所以这些症状的校准题也更新先验（权重仍为 0.5）。
     """
     do_brs, do_cal, do_drs, learn_w = MODES[mode]
     if cal_updates_prior is None:
@@ -122,13 +123,16 @@ async def run_session(mem: MemoryState, *, mode: str = "v2", breadth: int = BREA
     seq = 0
     gate = {"accepted": 0, "rejected": 0}
 
+    def changed(result: dict) -> bool:
+        return bool(focus) and result["spec"]["symptom"] in focus and result["symptom"] in focus
+
     async def emit(ev: dict) -> None:
         if notify:
             await notify(ev)
 
     async def record(result: dict, phase: str, step: int) -> dict:
         events, delta, new_items = consolidate(mem, result, weight=sandbox_weight,
-                                               examples_only=phase == "CAL" and not cal_updates_prior)
+                                               examples_only=phase == "CAL" and not cal_updates_prior and not changed(result))
         rec = {**result, "phase": phase, "step": step, "delta": delta, "new_items": new_items, "events": events}
         history.append(rec)
         if commit:
@@ -143,7 +147,7 @@ async def run_session(mem: MemoryState, *, mode: str = "v2", breadth: int = BREA
             if res["n"] >= 20:
                 gate["accepted" if res["accepted"] else "rejected"] += 1
                 await emit({"type": "weights", "accepted": res["accepted"], "weights": res["weights"], "n": res["n"],
-                            "gate": res.get("gate"), "reason": res.get("reason", "")})
+                            "avg_loglik": res.get("avg_loglik"), "gate": res.get("gate"), "reason": res.get("reason", "")})
 
     async def run_waves(specs: list[TaskSpec], phase: str, width: int, max_attempts: int) -> None:
         nonlocal seq
@@ -165,7 +169,7 @@ async def run_session(mem: MemoryState, *, mode: str = "v2", breadth: int = BREA
         await run_waves(specs, "BRS", concurrency, MAX_ATTEMPTS)
 
     if do_cal:
-        specs = curriculum.calibration(mem, history, cal_tasks, random.Random(seed_base + 31))
+        specs = curriculum.calibration(mem, history, cal_tasks, random.Random(seed_base + 31), focus=focus)
         await emit({"type": "phase", "phase": "CAL", "detail": f"证据校准：{len(specs)} 道低成本练习（每波 {CAL_WAVE} 道并行），学习每类证据该信多少"})
         await run_waves(specs, "CAL", CAL_WAVE, CAL_ATTEMPTS)
 

@@ -26,7 +26,7 @@ def test_chat_analyze_existing_case_streams_durable_steps(client):
 
 
 def test_chat_confirm_unknown_cause_is_rejected_without_interrupt(client):
-    bad = _chat(client, [{"role": "user", "content": "确认 KZ-0125 根因是月亮太圆"}])
+    bad = _chat(client, [{"role": "user", "content": "确认 KZ-0137 根因是月亮太圆"}])
     assert "没能识别根因" in bad["content"] and bad["outcome"]["type"] == "success"
 
 
