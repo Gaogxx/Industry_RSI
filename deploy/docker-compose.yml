@@ -1,0 +1,63 @@
+# Industry_RSI · Kaizen：芯片制造质量根因分析 + RSI 递归自我改进 + 持续学习
+#   cp .env.example .env && 填写密钥 && docker compose up -d --build
+#   http://<服务器>/          Kaizen 控制台（AG-UI 1.0 对话为主界面，左侧栏打开案例 / CAPA / 自我进化 …）
+
+services:
+  kaizen-agent:
+    build: ../backend
+    image: kaizen-agent:0.5.0
+    container_name: kaizen-agent
+    restart: unless-stopped
+    environment:
+      KAIZEN_API_KEY: ${KAIZEN_API_KEY:?请在 .env 中设置 KAIZEN_API_KEY}
+      KAIZEN_DASHBOARD_PUBLIC: ${KAIZEN_DASHBOARD_PUBLIC:-false}
+      KAIZEN_DATABASE_URL: ${KAIZEN_DATABASE_URL:-sqlite:////app/data/kaizen.db}
+      KAIZEN_DBOS_DATABASE_URL: ${KAIZEN_DBOS_DATABASE_URL:-sqlite:////app/data/kaizen-dbos.sqlite}
+      KAIZEN_SEED_DEMO: ${KAIZEN_SEED_DEMO:-true}
+      KAIZEN_ENABLE_MCP: ${KAIZEN_ENABLE_MCP:-true}
+      KAIZEN_RSI_ON_STARTUP: ${KAIZEN_RSI_ON_STARTUP:-true}
+      KAIZEN_RSI_CURRICULUM_MODEL: ${KAIZEN_RSI_CURRICULUM_MODEL:-}
+      KAIZEN_LLM_BASE_URL: ${LLM_BASE_URL:-https://api.deepseek.com/v1}
+      KAIZEN_LLM_API_KEY: ${LLM_API_KEY:-}
+      KAIZEN_LLM_MODEL: ${LLM_MODEL:-deepseek-v4-pro}
+      KAIZEN_EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
+      KAIZEN_EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      KAIZEN_EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+      KAIZEN_NIGHTLY_CRON: ${KAIZEN_NIGHTLY_CRON:-0 2 * * *}   # DBOS 定时：改进周期 + 学习曲线回放
+    volumes:
+      - kaizen-data:/app/data
+    mem_limit: 512m
+    logging: &logging
+      driver: json-file
+      options: { max-size: 10m, max-file: "3" }
+
+  nginx:
+    image: nginx:1.29-alpine
+    container_name: kaizen-nginx
+    restart: unless-stopped
+    depends_on: [kaizen-agent]
+    ports:
+      - "${HTTP_PORT:-80}:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    logging: *logging
+
+  # 可选：案例量大或多实例部署时启用 PostgreSQL + pgvector
+  #   docker compose --profile postgres up -d
+  #   并设置 KAIZEN_DATABASE_URL=postgresql+psycopg://kaizen:${POSTGRES_PASSWORD}@postgres:5432/kaizen
+  #   与 KAIZEN_DBOS_DATABASE_URL=postgresql://kaizen:${POSTGRES_PASSWORD}@postgres:5432/kaizen_dbos（多实例时必须）
+  postgres:
+    image: pgvector/pgvector:pg17
+    profiles: ["postgres"]
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: kaizen
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      POSTGRES_DB: kaizen
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    logging: *logging
+
+volumes:
+  kaizen-data:
+  pg-data:

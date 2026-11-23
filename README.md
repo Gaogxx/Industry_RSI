@@ -1,0 +1,361 @@
+<div align="center">
+
+# 🏭 Industry_RSI · 芯片制造质量自我进化 Agent（Kaizen）
+
+**面向 AI 芯片制造全流程（前道晶圆 → CP → 2.5D 封装 + HBM → FT/老化/SLT → 液冷整机柜）的质量根因分析智能体。统计因果内核负责可审计的根因排序；RSI 递归自我改进（数字孪生里三个 agent 自主练习）和产线持续学习（工程师确认的真实案例）把验证过的结论写进同一套可进化记忆；控制台参考 Claude / Codex，基于 AG-UI 1.0，关案必须人工批准。**
+
+[![Python](https://img.shields.io/badge/Python-3.12-blue?logo=python)](https://python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.165-009688?logo=fastapi)](https://fastapi.tiangolo.com/)
+[![AG-UI](https://img.shields.io/badge/AG--UI-1.0-111827)](https://docs.ag-ui.com/)
+[![DBOS](https://img.shields.io/badge/DBOS-3.6-2E6BE6)](https://www.dbos.dev/)
+[![Pydantic AI](https://img.shields.io/badge/Pydantic%20AI-2.71-E92063)](https://ai.pydantic.dev/)
+[![MCP](https://img.shields.io/badge/MCP-2026--07--28%20可选-6B4FBB)](https://modelcontextprotocol.io/)
+[![SQLite](https://img.shields.io/badge/SQLite-WAL-003B57?logo=sqlite)](https://sqlite.org/)
+[![DeepSeek](https://img.shields.io/badge/LLM-DeepSeek%20V4%20%7C%20Qwen4-4D6BFE)](https://api-docs.deepseek.com/)
+[![Tests](https://img.shields.io/badge/tests-44%20passed-success)](backend/tests)
+
+</div>
+
+---
+
+## 📖 项目简介
+
+本项目是一个面向**工业质量场景**的根因分析 + 自我进化 AI Agent 系统，项目内的智能体叫 **Kaizen**（改善）。它参考英伟达供应链和国内晶圆 / 封测大厂的产线，把每一次质量异常变成一个会自我改进的闭环：现场工程师在对话里描述问题或输入案例号，Kaizen 调取 MES / YMS / FDC 数据做统计分析，给出贝叶斯根因排序、5-Why、CAPA 和 8D 报告；工程师确认根因后，系统立刻告诉你它学到了什么。
+
+**RSI 学习和持续学习是同一件事**：都把“验证过的结论”写进同一套记忆，区别只在标签从哪里来。
+
+| 来源 | 结论怎么来 | 权重 | 什么时候发生 |
+|---|---|---|---|
+| 持续学习（产线） | 工程师确认根因、CAPA 验证有效 / 无效 | 1.0 | 随时 |
+| RSI 学习（数字孪生） | 课程 agent 出题 → 执行 agent 作答 → 孪生干预反馈 → 验证 agent 判定 | 0.5 | 按需 / 每晚 |
+
+### 核心架构理念
+
+- **神经-符号复合**：根因排序由统计证据（Fisher 精确检验、晶圆图空间特征、FDC σ 偏移、PM 时序）和可进化记忆给出，过程确定、可审计；大模型只负责理解、解释和写作，没有 Key 时整套系统照常运行。
+- **RSI v2**：参照 RSIAgent（arXiv:2609.15364），**不训练任何模型参数**，三个职责分离的 agent 在数字孪生里自主练习。在论文方案上做了三点改进：学习“每类证据该信多少”、加入证据校准批并按信息价值选题、每次更新都必须通过验收门。
+- **人在回路**：关案会改写产线记忆，agent 不会直接执行，而是以 AG-UI 中断结束这次运行，你批准后才写入；批准人和备注进入审计日志。
+
+### 适用场景
+
+- **晶圆厂 / 封测厂质量工程**：良率下降、晶圆图失效、套刻超规、封装翘曲、HBM 凸点开路等异常的根因分析与 8D
+- **新产线冷启动**：没有历史案例时，先在数字孪生里练习，把首位根因命中率从 56.0 提到 73.5（模拟数据）
+- **经验沉淀**：工程师每确认一个根因，根因先验、机台热点、证据权重、排查流程都会更新，并能追溯到具体案例
+- **Agent 工程实践**：自我改进的三角色制衡、验收门、DBOS 持久化工作流、AG-UI 中断与恢复、离线降级
+
+**一句话总结**：不只是一个根因分析工具，而是一个会自己练习、会从产线学习、每一步都能追溯和撤销的工业质量 Agent。
+
+---
+
+## 📸 应用展示
+
+<div align="center">
+
+| 对话主页 | 对话中根因分析 |
+|:---:|:---:|
+| ![对话主页](docs/screenshots/01-对话主页.png) | ![对话中根因分析](docs/screenshots/02-对话中根因分析.png) |
+
+| 关案需要人工批准 | 案例页面 |
+|:---:|:---:|
+| ![关案需要人工批准](docs/screenshots/03-关案需要人工批准.png) | ![案例页面](docs/screenshots/04-案例页面.png) |
+
+| 自我进化 · 概览 | 自我进化 · RSI 学习 |
+|:---:|:---:|
+| ![自我进化概览](docs/screenshots/05-自我进化-概览.png) | ![RSI 学习](docs/screenshots/06-自我进化-RSI学习.png) |
+
+| 自我进化 · 持续学习 | 自我进化 · 记忆条目 |
+|:---:|:---:|
+| ![持续学习](docs/screenshots/07-自我进化-持续学习.png) | ![记忆条目](docs/screenshots/08-自我进化-记忆条目.png) |
+
+</div>
+
+控制台布局参考 Claude / Codex：**主区域默认是对话**；质量总览、案例库、CAPA 看板、自我进化、改进周期、审计日志放在**左侧栏**，点开后在同一主区域完整显示，点“← 返回对话”或任一条最近对话回来。agent 只在消息里放卡片（如“打开 KZ-0121 →”），不会自动切走对话。
+
+---
+
+## 🏗️ 系统架构
+
+```mermaid
+flowchart TB
+    subgraph UI["🖥️ Kaizen 控制台（零构建 SPA）"]
+        SB["左侧栏<br/>新对话 · 功能 · 最近对话"]
+        CHAT["主区域：对话<br/>思考过程 · 回答 · 页面卡片 · 批准卡片"]
+        PAGE["主区域：功能页面<br/>总览 · 案例 · CAPA · 自我进化 · 改进周期 · 审计"]
+    end
+
+    subgraph API["⚙️ FastAPI 单进程"]
+        AGUI["/agui · AG-UI 1.0<br/>REASONING · TEXT · ACTIVITY · STATE<br/>RUN_FINISHED(interrupt) + resume"]
+        REST["/api · REST"]
+        MCP["/mcp · 可选<br/>Claude / VS Code / Cursor"]
+    end
+
+    subgraph CORE["🧠 智能体与内核"]
+        RCA["根因分析工作流（DBOS）<br/>受理 → 取数与统计证据 → 贝叶斯排序（含“若不学习”）<br/>→ 调取记忆 → 代码模式调查员 → 5-Why/CAPA → 评审 → 8D"]
+        STAT["统计因果内核<br/>Fisher+Bonferroni · 晶圆图 · FDC σ · 变点 / PM 时序"]
+        LLM["Pydantic AI 2.71<br/>DeepSeek V4 / Qwen4 / 私有化模型（可降级）"]
+        RSI["RSI v2 会话（DBOS）<br/>课程 agent · 执行 agent · 验证 agent<br/>广度 BRS → 证据校准 CAL → 深度 DRS"]
+        TWIN["数字孪生<br/>按提议整改后良率是否恢复"]
+    end
+
+    MEM[("🧬 可进化记忆<br/>根因先验 · 机台热点 · 证据权重 · 流程与教训")]
+    GATE{"验收门<br/>封存面板上不退步才采纳"}
+    DB[("SQLite WAL / PostgreSQL<br/>案例 · 分析 · CAPA · 记忆 · 权重版本 · 审计")]
+
+    SB --> CHAT & PAGE
+    CHAT <--> AGUI
+    PAGE <--> REST
+    AGUI --> RCA & RSI
+    RCA --> STAT & LLM
+    RCA -- 读取 --> MEM
+    RSI <--> TWIN
+    CHAT -- "工程师确认根因（批准后）" --> GATE
+    RSI -- "验证 agent 判定 PASS" --> GATE
+    GATE --> MEM
+    MEM --- DB
+```
+
+**一次关案怎么变成学习**：中断是 AG-UI 1.0 的原生能力，界面不需要特殊协议。
+
+```mermaid
+flowchart LR
+    A["用户：确认 KZ-0121<br/>根因是聚焦环磨损"] --> B["agent 识别根因<br/>不写任何数据"]
+    B --> C["RUN_FINISHED<br/>outcome = interrupt"]
+    C --> D{"用户批准？"}
+    D -- 取消 --> E["什么都不改"]
+    D -- "批准 + 备注" --> F["下一次运行带 resume"]
+    F --> G["关案 · 更新根因先验 / 机台热点 / 记忆"]
+    G --> H["重拟合证据权重<br/>过验收门才采纳"]
+    H --> I["重新回放学习曲线<br/>告诉你学到了什么"]
+```
+
+---
+
+## ✨ 核心亮点
+
+### 亮点一：RSI v2，三个角色互相制衡的递归自我改进
+
+| 角色 | 独占的权力 | 做法 |
+|---|---|---|
+| 课程 agent | 决定练什么 | 按**信息价值**选题：知识梯度 KG(\*) × 证据模糊率，即“再练几道这类题，留出集期望命中率能涨多少”；连续 8 题没有新知识就停 |
+| 执行 agent | 唯一能写记忆 | 用当前记忆做根因分析并提出整改；只在验证判定之后合并经验 |
+| 验证 agent | 判真假 | 只看孪生的干预反馈：按提议整改后同一时段良率是否恢复；看不到执行 agent 的推理和记忆；改善低于量测噪声一律不通过 |
+
+三个阶段：**广度 BRS**（12 题，按工段轮转保证覆盖）→ **证据校准 CAL**（480 道低成本练习，每波 24 题并行，难度易 : 中 : 难 = 2 : 4 : 4）→ **深度 DRS**（最多 36 题，失败驱动和压力测试）。在线模式下，校准题只用来学证据权重，不改动产线先验。
+
+### 亮点二：学“每类证据该信多少”，而不只是“本厂常见什么”
+
+v0.3 照搬论文方案，10 个种子复核后发现提升只是噪声（56.0 → 57.6）。诊断原因是手工设定的证据可信度偏保守：先验学得越有把握，强证据题反而从 88.5 掉到 78.2。v2 改为学习**证据权重**：以专家设定 ×1 为中心的条件 logit
+
+```text
+log P(根因 c | 证据 e) = Σ_k w_k · log factor_k(c) − log Z,    w = (先验, 共性分析, FDC, PM 时序, 机台热点)
+```
+
+用牛顿法加岭惩罚（向 w = 1 收缩）拟合，样本满 20 个才启用。结果：共性分析（Fisher 检验）的说服力被学成专家设定的 3～5 倍，FDC 约 1.2～1.9 倍，先验、PM、热点基本不变。
+
+### 亮点三：验收门，防止“越改越差”
+
+每次重拟合的候选权重都要在一组封存的验证题上比较：对数损失不变差、首位命中率下降不超过 1 个点，才采纳并保存新版本。参照 OpsHarness（arXiv:2608.25661）：去掉验收门的自进化比不进化还差。在干净孪生里验收门拒绝约 36% 的重拟合、均值不变；在线会话的深度阶段拦下了 10 次会让面板退步的更新；标签被打乱时拒绝更新。
+
+### 亮点四：Claude / Codex 式控制台 + AG-UI 1.0
+
+| 需要 | AG-UI 1.0 事件 | 做法 |
+|---|---|---|
+| 思考过程 | `REASONING_*` | 分析工作流的每一步，默认折叠 |
+| 推荐打开页面 | `ACTIVITY_SNAPSHOT` | 消息里留卡片（前三名根因 / 学到了什么 / 自我进化进度），点“打开 … →”才在主区域完整显示 |
+| 实时进度 | `ACTIVITY_DELTA`、`STEP_*`、`SUBAGENT_*`、`CUSTOM` | 自我进化三阶段、三个子 agent、每次权重重拟合是否被采纳 |
+| 共享上下文 | `STATE_SNAPSHOT` | 用户正在看哪个案例、哪个页面，agent 知道 |
+| 人在回路 | `RUN_FINISHED(outcome=interrupt)` + `resume` | 关案必须批准，取消则什么都不写 |
+
+多条对话保存在浏览器本地，左侧栏可切换、删除；手机宽度下左侧栏变成抽屉。
+
+### 亮点五：“自我进化”页面的四个分页
+
+| 分页 | 回答的问题 | 内容 |
+|---|---|---|
+| 概览 | 自我进化有没有用？ | 冷启动命中率、最近一次会话前后对比、持续学习 vs 冻结先验、证据权重、消融对比 |
+| RSI 学习 | 智能体在孪生里练了什么？ | 实时直播、会话得分曲线、验收门记录、每道练习题、知识缺口与信息价值 |
+| 持续学习 | 从产线真实案例学到了什么？ | 预序回放学习曲线、根因先验（教科书 → 当前）、机台热点、学习时间线 |
+| 记忆条目 | 它到底记住了什么？ | 记忆的四个部分及数量；“流程与教训”逐条列出条件、通过 / 失败次数、来源，可手动停用；分析新案例时取前 5 条生效条目参与推理 |
+
+### 亮点六：持久化工作流与降级
+
+- **DBOS 3.6**：分析流程、RSI 会话、冷启动基准、夜间学习都是持久化工作流，每一步检查点到数据库，崩溃后从最后完成的那一步继续，不重复调用大模型。agent 决定每一步做什么，DBOS 负责记下来、断了接着跑。
+- **离线可用**：没有配置大模型 Key 时，统计 + 贝叶斯内核仍然给出完整的排序、5-Why、CAPA 和 8D 报告；大模型失败时自动降级。
+- **代码模式调查员**：配置大模型后，模型可以写 Python 在 Monty 沙箱里切分批次 / FDC / 晶圆图数据核查假设，结论以似然因子进入排序。
+
+---
+
+## 📊 效果与诚实报告
+
+> 全部基于模拟数据：机台、产品、数值均为虚构，不代表任何真实企业。
+
+**新产线冷启动消融**（从教科书知识出发；留出测试集 480 题，按根因分布分层抽样；10 个随机种子）：
+
+| 模式 | 首位命中率（均值） | 最差种子 |
+|---|---|---|
+| 不做 RSI | 56.04 | — |
+| 仅广度 BRS | 54.71 | 48.12 |
+| 仅深度 DRS | 52.89 | 45.62 |
+| 论文方案 BRS → DRS（v0.3） | 57.58 | 52.08 |
+| ＋ 证据权重学习 | 62.15 | 58.96 |
+| **＋ 证据校准（v2，默认）** | **73.54** | **72.29** |
+| 参考天花板（知道孪生真实先验，且权重直接在测试集上拟合） | 74.58 | — |
+
+v2 拿到了约 94% 的可提升空间，最差的一个种子也好过 v0.3 最好的一个。
+
+| 度量 | 结果 |
+|---|---|
+| 在线自我进化（演示库，已有产线记忆） | 首位命中率 64.8 → 广度后 67.7 → 校准后 69.0；深度阶段在 66.9～73.5 之间波动，结束于 73.5（结束点有运气成分）；第二次会话 73.5 → 74.4 |
+| 真实案例持续学习（预序回放：每个案例先预测、后学习） | 持续学习 71% vs 冻结在教科书先验 68% |
+| RSI 修正的盲区 | “新导入扫描机套刻匹配误差”在产线上从未出现过；RSI 在孪生里练过之后，KZ-0126 的首位变为正确根因 |
+
+**局限**：孪生的根因分布和机台热点目前是演示用的虚构值。真实部署前必须用本厂历史数据校准孪生，否则学到的是孪生而不是产线，这也是孪生经验权重（0.5）低于产线确认（1.0）的原因。
+
+---
+
+## 🔧 关键问题解决方案
+
+### 1. 自我改进为什么起初效果不好
+
+照搬论文时只学先验（本厂常见什么根因），证据的可信度仍是手工设定的。先验越有把握，就越容易压过强证据。解决办法是同时学证据权重，并用一批低成本的校准练习提供足够样本；每次更新都过验收门，避免把噪声学进去。详见 [docs/02 §2.7](docs/02-架构设计.md)。
+
+### 2. 孪生经验和产线经验怎么共存
+
+两者写入同一套记忆，但权重不同（产线 1.0、孪生 0.5）。在线模式下孪生校准题只训练证据权重，不改动产线先验；每条记忆都记录来源，可以在“记忆条目”页逐条停用。
+
+### 3. 智能体改写记忆前怎么让人把关
+
+用 AG-UI 1.0 原生的中断：识别到“确认 KZ-xxxx 根因是 …”时，这次运行以 `outcome=interrupt` 结束，输入框锁定；用户批准（可附备注）后，界面带 `resume` 发起下一次运行才真正关案。不需要自定义协议，任何 AG-UI 客户端都能实现。
+
+### 4. 为什么不用 Open WebUI
+
+早期版本用 Open WebUI 作控制台，v0.5 完全移除：自有控制台已经覆盖对话、页面、批准和直播，保留 Open WebUI 只会多一套账号和配置。需要接外部客户端时，用可选的 MCP 接口（`KAIZEN_ENABLE_MCP`）。
+
+---
+
+## 🛠️ 技术栈
+
+| 组件 | 技术 | 版本 | 用途 |
+|---|---|---|---|
+| 运行时 | Python | 3.12 | 后端与全部算法 |
+| Web 框架 | FastAPI + Uvicorn | 0.165 / 0.54 | REST、AG-UI 流式端点、静态控制台 |
+| 智能体 ↔ 界面 | AG-UI（`ag-ui-protocol`） | 1.0.0 | 思考过程、面板卡片、状态、子 agent、中断与恢复 |
+| 持久化工作流 | DBOS | 3.6.0 | 分析流程、RSI 会话、冷启动基准、夜间学习；崩溃续跑 |
+| 大模型调用 | Pydantic AI + pydantic-ai-harness | 2.71.0 / 0.71.0 | 类型化输出与校验重试；代码模式调查员（Monty 沙箱） |
+| 大模型 | DeepSeek V4 / 通义 Qwen4 / vLLM 私有化 | OpenAI 兼容 | 5W2H、5-Why、措施细化、评审、追问；可降级 |
+| 数据 | SQLModel + SQLite（WAL）/ PostgreSQL | 0.0.50 | 案例、分析、CAPA、记忆、证据权重版本、RSI 会话、审计 |
+| 工具协议（可选） | MCP Python SDK + MCP Apps | 2.3.0 | 供 Claude / VS Code / Cursor 等客户端调用 |
+| 前端 | 原生 JS + CSS（零构建） | — | 左侧栏 + 主区域布局、SVG 图表、晶圆图、鱼骨图 |
+| 部署 | Docker Compose + Nginx | — | 单机部署；可选 PostgreSQL |
+
+---
+
+## 🚀 快速开始
+
+### 本地运行
+
+```bash
+git clone https://github.com/Gaogxx/Industry_RSI.git && cd Industry_RSI
+./scripts/dev-backend.sh      # 首次自动用 uv 建 venv；打开 http://localhost:8000
+```
+
+首次启动会写入演示数据（约 18 个月产线历史 + 6 个进行中案例），并跑一次冷启动基准和一次自我进化会话（Apple Silicon 笔记本实测约 20 秒，低配云服务器会更久）。打开后在对话里试试：
+
+1. `分析 KZ-0126`：国产 DUV 多重图形套刻超规，首位根因来自 RSI 在孪生里学到的知识；
+2. `确认 KZ-0121 根因是刻蚀腔聚焦环磨损`：弹出批准卡片，批准后才写入产线记忆并重拟合证据权重；
+3. 模式选“自我进化”，发送 `启动一次自我进化会话`：对话里的卡片实时显示三阶段进度和得分曲线；
+4. 左侧栏打开“自我进化”，看概览 / RSI 学习 / 持续学习 / 记忆条目。
+
+接入大模型（可选）：
+
+```bash
+KAIZEN_LLM_API_KEY=<你的 Key> KAIZEN_LLM_MODEL=deepseek-v4-pro ./scripts/dev-backend.sh
+```
+
+课程 agent 可以用不同的模型家族：`KAIZEN_RSI_CURRICULUM_MODEL=qwen4-max`，对应论文里执行与课程 / 验证分属不同模型的设计。密钥只从环境变量读取，不写进代码。
+
+### 生产部署
+
+```bash
+cd deploy && cp .env.example .env && chmod 600 .env   # 填写 KAIZEN_API_KEY，可选 LLM_API_KEY
+docker compose up -d --build                         # Kaizen + Nginx，http://<服务器>/
+```
+
+详见 [docs/03-部署运维.md](docs/03-部署运维.md)。
+
+### 测试
+
+```bash
+cd backend && .venv/bin/python -m pytest -q
+```
+
+44 个测试（约 1 分钟，离线）：统计内核、贝叶斯学习、DBOS 端到端、RSI v2（孪生 / 三角色 / 证据权重 / 验收门 / 知识梯度 / 消融 / 在线会话）、AG-UI（对话技能 / 页面卡片 / 关案中断 / 自我进化直播）、MCP、脚本化 LLM、鉴权。
+
+---
+
+## 📁 项目结构
+
+```
+Industry_RSI/
+├── backend/
+│   ├── app/
+│   │   ├── main.py              # 服务入口：/ 控制台 · /agui · /api · /mcp（可选）· /healthz
+│   │   ├── agui.py              # AG-UI 1.0 端点：事件映射、关案中断与恢复、自我进化直播
+│   │   ├── chat.py              # 对话技能：分析 / 建案 / 追问 / 确认根因 / 改进教练
+│   │   ├── api.py               # REST：案例、CAPA、学习曲线、证据权重、RSI 会话、审计
+│   │   ├── services.py          # 建案、分析、关案学习、CAPA
+│   │   ├── agent/               # 分析工作流（DBOS 步骤）、提示词、8D 报告、代码模式调查员
+│   │   ├── fab/                 # 产线模型（工段 / 症状 / 根因）、统计内核、知识图谱、学习与回放、演示数据生成
+│   │   ├── rsi/                 # RSI v2：数字孪生、三角色、BRS/CAL/DRS 引擎、证据权重与验收门、记忆、工作流
+│   │   ├── improvement.py       # KPI、帕累托、改进周期
+│   │   ├── mcp_server.py        # 可选 MCP 工具与 MCP Apps 看板
+│   │   ├── models.py · db.py    # 数据模型与数据库（结构变化时自动备份旧库）
+│   │   └── static/              # 控制台：index.html · app.js · styles.css（零构建）
+│   ├── tests/                   # pytest（离线）
+│   ├── Dockerfile
+│   └── pyproject.toml
+├── deploy/                      # docker-compose.yml · nginx.conf · .env.example
+├── scripts/dev-backend.sh       # 本地启动
+└── docs/
+    ├── 01-行业背景与调研.md
+    ├── 02-架构设计.md
+    ├── 03-部署运维.md
+    ├── 04-芯片制造产线与前沿技术调研.md
+    └── screenshots/
+```
+
+---
+
+## 🔌 接口
+
+| 入口 | 说明 |
+|---|---|
+| `GET /` | 控制台；`#/cases/121`、`#/evolution?tab=rsi`、`#/c/<对话 id>` 等深链接 |
+| `POST /agui` | AG-UI 1.0：`forwardedProps.mode` = `rca`（根因分析）/ `coach`（改进教练）/ `rsi`（启动并直播自我进化会话）；关案以 `outcome=interrupt` 结束，带 `resume` 批准后执行 |
+| `/api/cases` · `/api/actions` | 案例、分析、关案学习、CAPA |
+| `/api/rsi/*` | 自我进化会话、冷启动基准、知识缺口（含信息价值） |
+| `/api/learning/*` · `/api/memory` | 学习曲线、根因先验、证据权重版本与验收门、记忆条目 |
+| `/mcp` | 可选：MCP Streamable HTTP（`KAIZEN_ENABLE_MCP`） |
+
+---
+
+## 📚 相关文档
+
+| 文档 | 说明 |
+|---|---|
+| [01 行业背景与调研](docs/01-行业背景与调研.md) | 哪些工业领域最需要质量智能体、技术选型 |
+| [02 架构设计](docs/02-架构设计.md) | 复合 AI、RSI v2（三角色、三阶段、证据权重、验收门）、消融与诊断、控制台与协议 |
+| [03 部署运维](docs/03-部署运维.md) | 规格、Docker Compose、升级、运维要点 |
+| [04 芯片产线与前沿技术调研](docs/04-芯片制造产线与前沿技术调研.md) | 英伟达供应链与国内产线、RSI 文献综述（第 9 节） |
+
+---
+
+## 📄 License & 免责声明
+
+- 代码采用 MIT License（见 [LICENSE](LICENSE)）。
+- 演示数据和数字孪生全部为模拟，机台、产品、数值均为虚构，不代表任何真实企业。系统给出的根因与措施需要由质量工程师确认后执行。
+
+## 致谢
+
+- [RSIAgent](https://arxiv.org/abs/2609.15364) — 三角色递归自我改进框架
+- [OpsHarness](https://arxiv.org/abs/2608.25661) — 自进化的验收门设计
+- [AG-UI](https://github.com/ag-ui-protocol/ag-ui) · [DBOS](https://github.com/dbos-inc/dbos-transact-py) · [Pydantic AI](https://github.com/pydantic/pydantic-ai) · [FastAPI](https://github.com/fastapi/fastapi) · [MCP](https://github.com/modelcontextprotocol)

@@ -1,0 +1,32 @@
+[project]
+name = "kaizen-agent"
+version = "0.5.0"
+description = "Kaizen：芯片制造质量根因分析与 RSI 递归自我改进（统计因果内核 + 可进化记忆 + 数字孪生 + DBOS + Pydantic AI + AG-UI）"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "fastapi>=0.165",
+    "uvicorn[standard]>=0.54",
+    "sqlmodel>=0.0.50",
+    "pydantic-settings>=2.6",
+    "httpx>=0.28",
+    "dbos>=3.6,<4",
+    "pydantic-ai-slim[openai]>=2.71,<3",
+    "pydantic-ai-harness[codemode]>=0.71",
+    "mcp>=2.3,<3",
+    "ag-ui-protocol>=1.0,<2",
+]
+
+[project.optional-dependencies]
+postgres = ["psycopg[binary]>=3.2"]
+dev = ["pytest>=8", "pytest-asyncio>=0.24"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.setuptools.package-data]
+app = ["static/*"]

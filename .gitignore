@@ -1,0 +1,21 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+
+# 运行数据与备份（演示库启动时自动生成）
+backend/data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.bak
+
+# 密钥
+.env
+deploy/.env
+
+# 系统
+.DS_Store

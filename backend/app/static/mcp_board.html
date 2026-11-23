@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kaizen 改进与学习看板</title>
+<style>
+  :root { --bg:#ffffff; --fg:#1b1f24; --muted:#5f6b7a; --card:#f5f7fa; --line:#e3e8ef; --accent:#0b6bcb; --warn:#c2410c; --ok:#15803d; }
+  :root[data-theme="dark"] { --bg:#15181d; --fg:#e8ebf0; --muted:#9aa5b4; --card:#1e232a; --line:#2c333d; --accent:#5aa9ff; --warn:#fb923c; --ok:#4ade80; }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:12px; font:13px/1.5 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--fg); }
+  h1 { font-size:15px; margin:0 0 10px; display:flex; align-items:center; gap:8px; }
+  h2 { font-size:12px; color:var(--muted); font-weight:600; margin:14px 0 6px; text-transform:uppercase; letter-spacing:.04em; }
+  .tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(110px,1fr)); gap:8px; }
+  .tile { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:8px 10px; }
+  .tile b { display:block; font-size:20px; font-variant-numeric:tabular-nums; }
+  .tile span { color:var(--muted); font-size:11px; }
+  .bar { display:flex; align-items:center; gap:8px; margin:3px 0; }
+  .bar .lbl { width:28px; color:var(--muted); }
+  .bar .track { flex:1; background:var(--card); border-radius:4px; height:14px; overflow:hidden; }
+  .bar .fill { height:100%; background:var(--accent); }
+  .bar .num { width:56px; text-align:right; font-variant-numeric:tabular-nums; color:var(--muted); }
+  ul { list-style:none; margin:0; padding:0; }
+  li { padding:5px 0; border-bottom:1px solid var(--line); display:flex; gap:8px; }
+  li:last-child { border-bottom:0; }
+  .tag { font-size:11px; padding:0 6px; border-radius:10px; border:1px solid var(--line); color:var(--muted); white-space:nowrap; }
+  .warn { color:var(--warn); }
+  .cols { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  @media (max-width:560px) { .cols { grid-template-columns:1fr; } }
+  #empty { color:var(--muted); }
+</style>
+</head>
+<body>
+<h1>🧠 Kaizen 芯片质量 · 改进与学习看板</h1>
+<div id="root"><p id="empty">正在等待数据…</p></div>
+<script>
+(function () {
+  var nextId = 1, initId = null;
+  function post(msg) { window.parent.postMessage(msg, "*"); }
+  function request(method, params) { var id = nextId++; post({ jsonrpc: "2.0", id: id, method: method, params: params }); return id; }
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
+  function pct(v) { return v == null ? "-" : Math.round(v * 100) + "%"; }
+
+  function applyTheme(ctx) { if (ctx && ctx.theme) document.documentElement.setAttribute("data-theme", ctx.theme); }
+
+  function reportSize() { post({ jsonrpc: "2.0", method: "ui/notifications/size-changed", params: { height: document.documentElement.scrollHeight } }); }
+
+  function render(result) {
+    var d = result && result.structuredContent;
+    if (!d && result && result.content) {
+      for (var i = 0; i < result.content.length; i++) {
+        if (result.content[i].type === "text") { try { d = JSON.parse(result.content[i].text); break; } catch (e) {} }
+      }
+    }
+    if (!d || !d.kpis) return;
+    var k = d.kpis, L = d.learning || {}, s = L.summary || {};
+    var h = '<div class="tiles">' +
+      tile('<span style="color:var(--accent)">' + pct(s.hit1_learning) + "</span> / " + pct(s.hit1_frozen), "首位根因命中率：学习 / 冻结先验") +
+      tile(k.cases_open + " / " + k.cases_total, "进行中 / 总案例") +
+      tile(k.mttr_days + " 天", "平均关闭周期") +
+      tile('<span class="' + (k.capa_overdue ? "warn" : "") + '">' + k.capa_overdue + "</span>", "逾期 CAPA") + "</div>";
+    h += "<h2>学习曲线（" + (s.cases || 0) + " 个已验证案例，先预测后学习）</h2>" + curve(L.curve || []);
+    h += '<div class="cols"><div><h2>知识更新</h2>' + (L.shifts || []).map(function (x) {
+      return '<div class="bar"><span class="lbl" style="width:auto;flex:1">' + esc(x.name.slice(0, 14)) + '</span><span class="num" style="width:auto">' +
+        pct(x.prior) + " → <b>" + pct(x.posterior) + "</b></span></div>";
+    }).join("") + "</div>";
+    h += "<div><h2>进行中案例</h2><ul>" + (d.open_cases || []).map(function (c) {
+      return '<li><span class="tag">' + esc(c.code) + "</span><span>" + esc(c.title) + "</span></li>";
+    }).join("") + "</ul></div></div>";
+    document.getElementById("root").innerHTML = h;
+    reportSize();
+  }
+  function curve(pts) {
+    if (!pts.length) return "<p>暂无</p>";
+    var W = 560, H = 150, n = pts.length, x = function (i) { return 30 + i / Math.max(1, n - 1) * (W - 60); }, y = function (v) { return 8 + (1 - v) * (H - 24); };
+    var line = function (key) { return pts.map(function (p, i) { return x(i).toFixed(1) + "," + y(p[key]).toFixed(1); }).join(" "); };
+    return '<svg viewBox="0 0 ' + W + " " + H + '" style="width:100%"><line x1="30" x2="' + (W - 30) + '" y1="' + y(0.5) + '" y2="' + y(0.5) + '" stroke="var(--line)"/>' +
+      '<polyline fill="none" stroke="var(--muted)" stroke-width="2" stroke-dasharray="5 4" points="' + line("f") + '"/>' +
+      '<polyline fill="none" stroke="var(--accent)" stroke-width="2.6" points="' + line("l") + '"/>' +
+      '<text x="' + (W - 26) + '" y="' + (y(pts[n - 1].l) + 4) + '" fill="var(--accent)" font-size="11">' + pct(pts[n - 1].l) + "</text>" +
+      '<text x="' + (W - 26) + '" y="' + (y(pts[n - 1].f) + 4) + '" fill="var(--muted)" font-size="11">' + pct(pts[n - 1].f) + "</text></svg>" +
+      '<div style="font-size:11px;color:var(--muted)">实线：持续学习　虚线：冻结在教科书先验</div>';
+  }
+  function tile(v, l) { return '<div class="tile"><b>' + v + "</b><span>" + l + "</span></div>"; }
+
+  window.addEventListener("message", function (e) {
+    var m = e.data;
+    if (!m || m.jsonrpc !== "2.0") return;
+    if (m.id === initId && m.result) {
+      applyTheme(m.result.hostContext);
+      post({ jsonrpc: "2.0", method: "ui/notifications/initialized", params: {} });
+    } else if (m.method === "ui/notifications/tool-result") {
+      render(m.params);
+    } else if (m.method === "ui/notifications/host-context-changed") {
+      applyTheme(m.params);
+    } else if (m.method === "ui/resource-teardown" && m.id != null) {
+      post({ jsonrpc: "2.0", id: m.id, result: {} });
+    }
+  });
+  if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) applyTheme({ theme: "dark" });
+  initId = request("ui/initialize", { appInfo: { name: "kaizen_board", version: "0.1.0" }, appCapabilities: {}, protocolVersion: "2026-01-26" });
+})();
+</script>
+</body>
+</html>
