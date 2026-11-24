@@ -218,8 +218,11 @@ async def rca(messages: list[dict], text: str, actor: str) -> AsyncIterator[tupl
         with session_scope() as db:
             an = db.exec(select(Analysis).where(Analysis.case_id == case_id).order_by(col(Analysis.id).desc())).first()
             top = [{"name": h["name"], "posterior": h["posterior"], "cause_code": h["cause_code"]} for h in (an.hypotheses if an else [])[:3]]
+            hz = (an.counterfactual or {}).get("harness") if an else None
         yield "activity", {"type": "kaizen.case", "route": f"/cases/{case_id}", "open": True, "title": f"{code} 根因分析",
-                           "top": top, "changed": bool(done.get("learning_changed_top"))}
+                           "top": top, "changed": bool(done.get("learning_changed_top")),
+                           "harness": {"route": hz["route"], "reliability": hz["reliability"], "set_n": len(hz["set"]),
+                                       "ttt": (hz.get("inner") or {}).get("ttt")} if hz else None}
 
 
 async def coach(messages: list[dict], text: str, actor: str) -> AsyncIterator[tuple[str, str]]:

@@ -29,7 +29,7 @@ class CurriculumPick(BaseModel):
     symptom: str
     difficulty: Literal["easy", "medium", "hard"] = "medium"
     decoy_pm: bool = False
-    variant: Literal["前置技能", "信息量变体", "失败驱动", "压力测试", "证据校准", "变更校准"] = "信息量变体"
+    variant: Literal["前置技能", "信息量变体", "失败驱动", "压力测试", "证据校准", "变更校准", "近邻练习"] = "信息量变体"
     rationale: str = ""
 
 
@@ -155,6 +155,24 @@ class Curriculum:
             specs.append(TaskSpec(g["symptom"], diff, rng.random() < 0.2, "变更校准" if changed else "证据校准",
                                   f"{'产线变更后重新校准' if changed else '校准批：学习各类证据的可信度'}（{g['name']}，信息价值 {g['voi']:.2f}）"))
         return specs
+
+    def test_time(self, symptom: str, evidence: dict, n: int, rng) -> list[TaskSpec]:
+        """测试时出题（与 TTT 互补）：针对眼前这个案例出“近邻练习”——同一症状、相近的证据强度与干扰。
+
+        常规课程决定长期该练什么（面向全部症状的知识缺口）；近邻练习只为当前这一案服务，练完即弃，留下的是经验。
+        """
+        from .memory import condition_of
+
+        cond = condition_of(evidence or {})
+        weights = [3, 4, 3] if cond["evidence"] == "strong" else [1, 4, 5]
+        out = []
+        for i in range(n):
+            diff = rng.choices(["easy", "medium", "hard"], weights=weights)[0]
+            decoy = cond["after_pm"] and rng.random() < 0.5
+            out.append(TaskSpec(symptom, diff, decoy, "近邻练习",
+                                f"测试时训练：与当前案例相近的「{SYMPTOMS[symptom].name if symptom in SYMPTOMS else symptom}」"
+                                f"（{'共性分析显著' if cond['evidence'] == 'strong' else '证据模糊'}{'，PM 后突变' if cond['after_pm'] else ''}）"))
+        return out
 
     async def _llm_refine(self, specs: list[TaskSpec], gaps: list[dict], phase: str, n: int) -> list[TaskSpec] | None:
         if not (self.llm and self.llm.available):

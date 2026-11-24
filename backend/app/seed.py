@@ -24,7 +24,8 @@ from .fab.flow import CAUSES, STEPS, SYMPTOMS, Scenario, cause_by_code
 from .fab.learning import ensure_edges, learn_from_closure, rank_case, refute_cause
 from .fab.simulate import simulate
 from .improvement import build_cycle
-from .models import Action, Analysis, AuditLog, Case, EvidenceModel, FabDataset, LearningEvent, RSISession, RSITask, utcnow
+from .models import (Action, Analysis, AuditLog, Case, EvidenceModel, FabDataset, HarnessReceipt, LearningEvent, RSISession, RSITask,
+                     utcnow)
 from .rsi.twin import CHANGES, HOTSPOTS, SITE_TRUTH, FabTwin, era_at, hotspot_tool, truth_for_era
 
 log = logging.getLogger("kaizen.seed")
@@ -51,6 +52,8 @@ IN_PROGRESS = [(46, "verifying"), (41, "verifying"), (37, "verifying"), (33, "ca
 CYCLE_DAYS = list(range(510, 0, -30))  # 每月一次改进周期
 # RSI 会话：产线变更同步到孪生两天后跑一次，把变化学进来（最后一次变更由今天启动时的在线会话处理）
 RSI_DAYS = [352] + [c.days_ago - 2 for c in CHANGES[:-1]]  # 首次会话 + 每次产线变更两天后
+HARNESS_TRAIN_DAYS = [300, 200, 100, 30]  # 可靠度模型：有触发条件时才开训练窗口
+HARNESS_EVOLVE_DAYS = [150]  # 历史上的一次 RRSI 策略进化（今天启动时还会再跑一次）
 
 SITES = {"fe": ("Fab A · 12 英寸先进逻辑", "AX-900 加速器 die（5nm 级）"),
          "pkg": ("封测厂 B · 2.5D 先进封装", "AX-900 2.5D 封装（中介层 + 8×HBM3E）"),
@@ -179,6 +182,39 @@ class _Timeline:
         spec.update(analysis_id=an.id, ranked=[h.cause_code for h in hyps])
         db.commit()
 
+    async def receipt(self, spec: dict) -> None:
+        """建案分析时同时走快慢双脑：写收据；慢脑做近邻练习时面对的是当时的孪生。"""
+        from .harness.brain import decide
+        from .rsi.memory import load_memory
+
+        db = self.db
+        when = spec["created"] + timedelta(hours=2, minutes=5)
+        case, an = db.get(Case, spec["case_id"]), db.get(Analysis, spec["analysis_id"])
+        out = await decide(db, case.model_dump(), case.evidence or {}, case.symptom, an.hypotheses, load_memory(db),
+                           seed=spec["case_id"] * 7919, twin=FabTwin(now=when, era=era_at(self.days_ago(when))), when=when)
+        rc = out["receipt"]
+        rc.analysis_id = an.id
+        db.add(rc)
+        an.counterfactual = {**(an.counterfactual or {}), "harness": out["answer"]}
+        db.add(an)
+        _audit(db, "agent", "harness.route", case.code, when, route=rc.route, reliability=rc.reliability)
+        db.commit()
+
+    async def harness_train(self, when) -> None:
+        from .harness.train import pending_triggers, train_window
+        from .rsi.memory import load_memory
+
+        trig = pending_triggers(self.db)
+        if trig:
+            await train_window(self.db, load_memory(self.db), ",".join(trig), when, twin=FabTwin(now=when, era=era_at(self.days_ago(when))))
+
+    async def harness_evolve(self, when) -> None:
+        from .harness.evolve import evolve_run
+        from .rsi.memory import load_memory
+
+        await evolve_run(self.db, load_memory(self.db), generations=2, children=2, when=when, seed=int(self.days_ago(when)),
+                         twin=FabTwin(now=when, era=era_at(self.days_ago(when))))
+
     def close(self, spec: dict) -> None:
         db, rng = self.db, self.rng
         case = db.get(Case, spec["case_id"])
@@ -216,6 +252,9 @@ class _Timeline:
         case.status, case.closed_at = "closed", when
         db.add(case)
         db.flush()
+        from .harness.experience import reflect_verified
+
+        reflect_verified(db, case, when)  # 外层递归：收据写入现场结果，经验按成败更新
         learn_from_closure(db, case, cause, spec["ranked"], when=when)
         _audit(db, rng.choice(APPROVERS), "case.close", case.code, when, cause_code=cause,
                rank_in_analysis=spec["ranked"].index(cause) + 1 if cause in spec["ranked"] else None)
@@ -337,8 +376,10 @@ async def seed(db: Session) -> int:
     events += [(c["closed"], 1, "close", c) for c in tl.cases if c["closed"]]
     events += [(now - timedelta(days=d, hours=-2), 2, "cycle", None) for d in CYCLE_DAYS]
     events += [(now - timedelta(days=d, hours=-3), 3, "rsi", None) for d in RSI_DAYS]
+    events += [(now - timedelta(days=d, hours=-4), 4, "harness_train", None) for d in HARNESS_TRAIN_DAYS]
+    events += [(now - timedelta(days=d, hours=-5), 5, "harness_evolve", None) for d in HARNESS_EVOLVE_DAYS]
     prev_rsi = None
-    cost = {"create": 1, "close": 1, "cycle": 3, "change": 1, "rsi": 30}
+    cost = {"create": 2, "close": 1, "cycle": 3, "change": 1, "rsi": 30, "harness_train": 6, "harness_evolve": 25}
     total, done = sum(cost[e[2]] for e in events), 0
     for when, _, kind, spec in sorted(events, key=lambda e: (e[0], e[1])):
         done += cost[kind]
@@ -346,6 +387,12 @@ async def seed(db: Session) -> int:
         await asyncio.sleep(0)  # 让出事件循环：生成期间控制台照常响应
         if kind == "create":
             tl.create(spec)
+            if spec.get("analysis_id"):
+                await tl.receipt(spec)
+        elif kind == "harness_train":
+            await tl.harness_train(when)
+        elif kind == "harness_evolve":
+            await tl.harness_evolve(when)
         elif kind == "close":
             tl.close(spec)
         elif kind == "cycle":
@@ -401,6 +448,9 @@ async def finish_in_progress(db_factory) -> None:
             for an in db.exec(select(Analysis).where(Analysis.case_id == case_id)).all():
                 an.created_at = an.created_at + shift
                 db.add(an)
+            for rc in db.exec(select(HarnessReceipt).where(HarnessReceipt.case_id == case_id)).all():
+                rc.created_at = rc.created_at + shift
+                db.add(rc)
             for a in db.exec(select(Action).where(Action.case_id == case_id)).all():
                 a.created_at = a.created_at + shift
                 a.due_date = a.created_at + timedelta(days=a.due_days)
@@ -496,6 +546,16 @@ async def prepare_demo(rsi_on_startup: bool = True) -> None:
                 summary = await handle.get_result()
                 log.info("RSI：冷启动基准已完成；今天的在线会话 %s 道题，留出集首位命中率 %s → %s",
                          summary["tasks"], summary["hit1_before"], summary["hit1_after"])
+        from .harness.service import benchmark, nightly
+        from .models import HarnessBenchmark
+
+        with session_scope() as db:
+            has_hbench = db.exec(select(HarnessBenchmark)).first() is not None
+        if not has_hbench:
+            _progress(0.97, "harness：可靠度训练窗口 → RRSI 策略进化 → 快慢双脑孪生对照")
+            with session_scope() as db:
+                await nightly(db, force_evolve=True)
+                await benchmark(db, trigger="seed")
         _progress(1.0, "演示数据已就绪", state="ready")
     except Exception as e:  # noqa: BLE001
         log.exception("演示数据准备失败")

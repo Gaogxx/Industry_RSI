@@ -109,17 +109,19 @@ def _solve(a: list[list[float]], b: list[float]) -> list[float]:
 
 
 def fit(examples: list[tuple[list[tuple[str, list[float]]], str]], lam: float = PRIOR_LAMBDA,
-        iters: int = 25, start: dict | None = None) -> dict:
+        iters: int = 25, start: dict | None = None, anchor: dict | None = None) -> dict:
     """examples: [(候选根因及其特征, 已验证的根因)]。返回权重、样本数与训练集对数似然。
 
     start：从上一版权重热启动（目标函数是凸的，最优解不变，只是少走几步牛顿迭代）。
+    anchor：岭惩罚的中心（默认是专家设定 w=1；测试时训练用线上权重做中心，只允许小幅偏离）。
     """
     k = len(FACTOR_NAMES)
     w = [float((start or {}).get(n, 1.0)) for n in FACTOR_NAMES]
+    center = [float((anchor or {}).get(n, 1.0)) for n in FACTOR_NAMES]
     data = [(rows, truth) for rows, truth in examples if any(c == truth for c, _ in rows) and len(rows) > 1]
     rng = range(k)
     for _ in range(iters):
-        g = [-lam * (wi - 1.0) for wi in w]
+        g = [-lam * (wi - ci) for wi, ci in zip(w, center)]
         hmat = [[(-lam if i == j else 0.0) for j in rng] for i in rng]
         for rows, truth in data:
             feats = [f for _, f in rows]

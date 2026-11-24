@@ -319,6 +319,40 @@ def learning_weights(db: Session = Depends(get_session)):
             "history": [r.model_dump() for r in reversed(rows)], "by_source": by_source}
 
 
+@router.get("/harness", dependencies=R)
+def harness_overview(db: Session = Depends(get_session)):
+    from .harness.service import overview
+
+    return overview(db)
+
+
+@router.post("/harness/evolve", dependencies=W)
+async def harness_evolve(request: Request, db: Session = Depends(get_session)):
+    from .harness.evolve import evolve_run
+    from .rsi.memory import load_memory
+
+    res = await evolve_run(db, load_memory(db))
+    audit(db, actor_of(request), "harness.evolve.manual", res["run_id"], promoted=res["promoted"])
+    db.commit()
+    return res
+
+
+@router.post("/harness/train", dependencies=W)
+async def harness_train(request: Request, db: Session = Depends(get_session)):
+    from .harness.train import pending_triggers, train_window
+    from .rsi.memory import load_memory
+
+    row = await train_window(db, load_memory(db), "manual:" + ",".join(pending_triggers(db)))
+    return row.model_dump()
+
+
+@router.post("/harness/benchmark", dependencies=W)
+async def harness_bench(db: Session = Depends(get_session)):
+    from .harness.service import benchmark
+
+    return (await benchmark(db)).model_dump()
+
+
 @router.get("/rsi/benchmark", dependencies=R)
 def rsi_benchmark(db: Session = Depends(get_session)):
     from .models import RSIBenchmark

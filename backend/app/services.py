@@ -112,6 +112,10 @@ def update_action(db: Session, action_id: int, *, status: str | None = None, res
         db.add(case)
     db.commit()
     if case and status == "ineffective":  # 现场否定 → 回到 PDCA 的 Do，并让图谱“记住被误导过”
+        if case.status == "closed":  # 关案标签被推翻：撤回这次关案带来的 harness 经验计数
+            from .harness.experience import revoke_for_case
+
+            revoke_for_case(db, case.id)
         case.status = "capa"
         case.closed_at = None
         db.add(case)
@@ -144,17 +148,22 @@ async def close_case(case_id: int, *, cause_code: str, root_cause: str | None = 
         db.add(case)
         db.commit()
         rank_before = ranked.index(cause_code) + 1 if cause_code in ranked else None
+        from .harness.experience import reflect_verified
+
+        harness = reflect_verified(db, case)  # 外层递归：收据写入现场结果，经验库按成败更新（答错则追责）
+        db.commit()
         events = learn_from_closure(db, case, cause_code, ranked)
         from .rsi.memory import load_memory, refit_and_store
 
         w = refit_and_store(db, load_memory(db), source="production")  # 产线确认也是证据权重的训练标签
         run = run_backtest(db, trigger=f"close:{case.code}")
         audit(db, actor, "case.close", case.code, cause_code=cause_code, rank_in_analysis=rank_before,
-              learning_events=len(events), weights_accepted=w["accepted"])
+              learning_events=len(events), weights_accepted=w["accepted"], harness_top_match=harness.get("top_match"))
         db.commit()
         return {"case": case_dict(case), "rank_in_analysis": rank_before,
                 "learning_events": [e.model_dump() for e in events], "learning_summary": run.summary,
-                "weights": {"accepted": w["accepted"], "weights": w["weights"], "n": w["n"], "reason": w.get("reason", "")}}
+                "weights": {"accepted": w["accepted"], "weights": w["weights"], "n": w["n"], "reason": w.get("reason", "")},
+                "harness": harness}
 
 
 def set_memory_status(db: Session, item_id: int, active: bool, actor: str = "api") -> MemoryItem:

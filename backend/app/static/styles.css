@@ -364,3 +364,11 @@ a.mem-part:hover { border-color: var(--accent-line); }
 .spin { width: 12px; height: 12px; border: 2px solid var(--accent); border-top-color: transparent; border-radius: 50%; animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .spin { animation: none; } .demo-banner i { transition: none; } }
+
+/* Harness：每月路由柱状图 */
+.route-bars { display: flex; align-items: flex-end; gap: 6px; height: 150px; padding-top: 6px; }
+.rb { flex: 1; display: grid; justify-items: center; gap: 2px; min-width: 0; }
+.rb-t { display: flex; flex-direction: column-reverse; width: 100%; max-width: 26px; height: 120px; background: var(--bg); border-radius: 4px; overflow: hidden; }
+.rb-t i { display: block; width: 100%; }
+.rb-t i.f { background: var(--ok); }
+.rb-t i.s { background: var(--accent); }

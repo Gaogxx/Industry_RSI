@@ -20,7 +20,7 @@ from ..config import get_settings
 from ..db import session_scope
 from ..fab.flow import SYMPTOMS
 from ..llm import LLM
-from ..models import Action, Analysis, AuditLog, Case, FabDataset, utcnow
+from ..models import Action, Analysis, AuditLog, Case, FabDataset, HarnessReceipt, utcnow
 from . import steps
 from .investigator import fuse, investigate
 from .report import render_8d
@@ -82,6 +82,32 @@ async def s_infer(state: dict) -> dict:
 
 
 @DBOS.step()
+async def s_harness(state: dict) -> dict:
+    """快慢双脑：快脑可靠就直接给结论；否则慢脑做双层递归的内层（证据族对照 + 近邻练习 / 测试时训练）。"""
+    from ..harness.brain import decide
+    from ..rsi.memory import load_memory
+
+    r = _Run("harness")
+    case = {**state["case"], "severity": state.get("severity") or state["case"].get("severity", "")}
+    with session_scope() as db:
+        mem = load_memory(db)
+        n_prev = len(db.exec(select(Analysis).where(Analysis.case_id == case["id"])).all())
+        out = await decide(db, case, state.get("evidence") or {}, state["symptom"], state["hypotheses"], mem,
+                           seed=case["id"] * 7919 + n_prev)
+        db.commit()
+    ans, rc = out["answer"], out["receipt"]
+    receipt = {k: v for k, v in rc.model_dump().items() if k not in ("id", "created_at", "verified_at", "analysis_id")}
+    ttt = (ans["inner"] or {}).get("ttt")
+    if ans["route"] == "fast":
+        r.emit("harness", "快脑 · 直接给结论", f"可靠度 {ans['reliability']:.0%}，保形集合 {len(ans['set'])} 个根因；不跑孪生、不调大模型")
+    else:
+        r.emit("harness", "慢脑 · 双层递归", "转慢脑原因：" + "、".join(ans["reasons"]) +
+               (f"；近邻练习 {ttt['tasks']} 题，探测命中 {ttt['probe_before']}/{ttt['probe_n']} → {ttt['probe_after']}/{ttt['probe_n']}，"
+                + ("采纳练习后的结论" if ttt["adopt"] else "回退到线上记忆") if ttt else ""))
+    return await r.finish({"hypotheses": out["final"], "harness": {"answer": ans, "receipt": receipt}})
+
+
+@DBOS.step()
 async def s_knowledge(state: dict) -> dict:
     r = _Run("knowledge")
     return await r.finish(await steps.knowledge(state, r.emit))
@@ -136,7 +162,8 @@ async def s_persist(state: dict) -> dict:
         an = Analysis(case_id=case_id, version=version, problem_statement=state.get("problem") or {},
                       evidence=state.get("evidence") or {}, hypotheses=state.get("hypotheses") or [],
                       counterfactual={**(state.get("counterfactual") or {}), "tests": state.get("tests") or [],
-                                      "investigation": state.get("investigation")},
+                                      "investigation": state.get("investigation"),
+                                      "harness": (state.get("harness") or {}).get("answer")},
                       ishikawa=state.get("ishikawa") or {}, five_whys=state.get("five_whys") or [],
                       root_causes=state.get("root_causes") or [], containment=state.get("containment") or [],
                       critique=state.get("critique") or {}, iterations=state.get("iteration", 1),
@@ -153,6 +180,9 @@ async def s_persist(state: dict) -> dict:
                           due_days=a.get("due_days", 7), due_date=now + timedelta(days=a.get("due_days", 7)),
                           verify_metric=str(a.get("verify_metric", "")), baseline=str(a.get("baseline", "")),
                           target=str(a.get("target", ""))))
+        hz = state.get("harness") or {}
+        if hz.get("receipt"):
+            db.add(HarnessReceipt(**hz["receipt"], analysis_id=an.id))
         case = db.get(Case, case_id)
         top = (state.get("hypotheses") or [{}])[0]
         case.symptom = state.get("symptom", case.symptom)
@@ -165,7 +195,8 @@ async def s_persist(state: dict) -> dict:
         db.add(AuditLog(actor=state.get("actor", "api"), action="agent.analyze", target=case.code,
                         detail={"analysis_id": an.id, "score": an.critique.get("score"), "model": an.model,
                                 "top": top.get("cause_code"), "workflow_id": DBOS.workflow_id,
-                                "learning_changed_top": an.counterfactual.get("changed")}))
+                                "learning_changed_top": an.counterfactual.get("changed"),
+                                **({"route": hz["answer"]["route"], "reliability": hz["answer"]["reliability"]} if hz.get("answer") else {})}))
         db.commit()
         return {"case_id": case_id, "code": case.code, "analysis_id": an.id, "score": an.critique.get("score"),
                 "top": top.get("cause_code"), "learning_changed_top": an.counterfactual.get("changed"),
@@ -182,8 +213,11 @@ async def rca_workflow(case_id: int, actor: str = "api") -> dict:
         state.update(out)
 
     try:
-        for step in (s_intake, s_evidence, s_infer, s_knowledge, s_investigate):
+        for step in (s_intake, s_evidence, s_infer, s_harness, s_knowledge):
             merge(await step(state))
+        requested = DBOS.workflow_id in _LLM_OVERRIDES  # 调用方明确要求用某个大模型分析（如脚本化模型、人工点名深查）
+        if requested or (state.get("harness") or {}).get("answer", {}).get("route") != "fast":  # 快脑结论不调用大模型调查员
+            merge(await s_investigate(state))
         while True:
             for step in (s_explain, s_capa, s_review):
                 merge(await step(state))
@@ -237,11 +271,14 @@ async def _nightly_step() -> dict:
     from ..db import session_scope
     from ..rsi.memory import load_memory, refit_and_store
 
+    from ..harness.service import nightly as harness_nightly
+
     cycle = await run_cycle(trigger="schedule")
     with session_scope() as db:  # 夜间：用全部已验证样本（产线 + 孪生）重拟合证据权重
         w = refit_and_store(db, load_memory(db), source="nightly")
         db.commit()
-    return {"cycle_id": cycle.id, "weights_accepted": w["accepted"]}
+        hz = await harness_nightly(db)  # harness：观察期检查 → 可靠度训练窗口（有触发才开）→ 每周一次 RRSI 策略进化
+    return {"cycle_id": cycle.id, "weights_accepted": w["accepted"], "harness": hz}
 
 
 async def ensure_schedule() -> None:

@@ -273,3 +273,86 @@ class ImprovementCycle(SQLModel, table=True):
     findings: list = _json(list)
     summary_md: str = ""
     created_at: datetime = Field(default_factory=utcnow)
+
+
+# ── Harness 层（v0.6）：快慢双脑、任务经验、双层递归、RRSI 策略进化、可靠度模型 ─────────
+class HarnessReceipt(SQLModel, table=True):
+    """一次分析的收据（任务经验的原始记录）：走了快脑还是慢脑、为什么、内层递归做了什么、可靠度与保形集合。
+    关案后写入 outcome，才参与经验库更新与可靠度模型训练（模型自评不当作标签）。"""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    case_id: int = Field(foreign_key="case.id", index=True)
+    analysis_id: Optional[int] = Field(default=None, index=True)
+    scope: str = Field(default="", index=True)  # 产线范围：工厂 + 产品
+    symptom: str = Field(default="", index=True)
+    signature: dict = _json(dict)  # 证据条件：强/弱、富集类型、PM 后突变、首位、证据信号
+    route: str = "fast"  # fast / slow
+    reasons: list = _json(list)
+    policy_version: int = 0
+    reliability: float = 0.0  # 首位根因是真因的校准概率
+    reliability_model: int = 0  # 0 = 尚无训练过的模型（用后验作近似）
+    conformal: dict = _json(dict)  # {"alpha", "q", "set": [根因代码]}
+    inner: dict = _json(dict)  # 内层递归：候选、探测、合成决定、近邻练习（TTT）
+    experiences: list = _json(list)  # 用到的经验条目 id
+    top_fast: str = ""  # 快脑给出的首位
+    top: str = ""  # 最终首位
+    outcome: dict = _json(dict)
+    verified_at: Optional[datetime] = Field(default=None, index=True)
+    created_at: datetime = Field(default_factory=utcnow, index=True)
+
+
+class HarnessExperience(SQLModel, table=True):
+    """双轨任务经验（参照 TTSE 与 Harness² 的改进经验库）：fact = 可核实的产线事实；tip = 带条件的做法。
+    每条用 Beta 后验记成败：P<0.45 且失败≥4 次停用（留档可审计），P≥0.72 且≥3 次标为稳定。拿不准时一律记为 tip。"""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    track: str = Field(default="tip", index=True)  # fact / tip
+    key: str = Field(index=True, unique=True)
+    scope: str = Field(default="", index=True)  # "" = 全厂通用
+    symptom: str = Field(default="", index=True)
+    condition: dict = _json(dict)
+    text: str = ""
+    action: dict = _json(dict)  # tip：{"do": "ttt" | "slow" | "probe", ...}；fact：{"cause": ...}
+    alpha: float = 1.0
+    beta: float = 1.0
+    status: str = Field(default="active", index=True)  # active / stable / retired
+    evidence: list = _json(list)  # [{"receipt": id} | {"probe": {...}}]
+    blame: list = _json(list)  # 被追责的记录：哪次、为什么
+    retired_reason: str = ""
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+
+
+class HarnessPolicy(SQLModel, table=True):
+    """harness 策略存档（跨 run 继承）：每个候选都留档，包括被拒的；status=active 的那一版用于线上。"""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    run_id: str = Field(default="", index=True)
+    parent_id: Optional[int] = None
+    params: dict = _json(dict)
+    edits: list = _json(list)  # [{"component", "from", "to", "hypothesis"}]
+    scores: dict = _json(dict)  # {"search": {...}, "select": {...}, "report": {...}, "noise": ...}
+    status: str = Field(default="candidate", index=True)  # candidate / accepted / rejected / active / retired / rolled_back
+    note: str = ""
+    created_at: datetime = Field(default_factory=utcnow, index=True)
+
+
+class ReliabilityModel(SQLModel, table=True):
+    """可靠度模型（训练机制，与免训练的 RSI 并存）：预测“首位根因是真因”的概率；附保形预测阈值。"""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    status: str = Field(default="candidate", index=True)  # candidate / active / rejected / failed
+    coef: dict = _json(dict)
+    window: dict = _json(dict)  # 训练窗口：触发原因、样本池、样本数、信息量占比
+    metrics: dict = _json(dict)  # 留出集：logloss / ECE / Brier / 保形覆盖率；对比在用版本
+    conformal: dict = _json(dict)  # {"alpha", "q", "n_cal"}
+    created_at: datetime = Field(default_factory=utcnow, index=True)
+
+
+class HarnessBenchmark(SQLModel, table=True):
+    """孪生对照实验：只用快脑 vs 快慢双脑（含近邻练习）；以及产线刚变更、记忆还没跟上的压力场景。"""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    trigger: str = "manual"
+    results: dict = _json(dict)
+    created_at: datetime = Field(default_factory=utcnow)

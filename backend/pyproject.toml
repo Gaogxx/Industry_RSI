@@ -1,6 +1,6 @@
 [project]
 name = "kaizen-agent"
-version = "0.5.0"
+version = "0.6.0"
 description = "Kaizen：芯片制造质量根因分析与 RSI 递归自我改进（统计因果内核 + 可进化记忆 + 数字孪生 + DBOS + Pydantic AI + AG-UI）"
 requires-python = ">=3.12,<3.14"
 dependencies = [

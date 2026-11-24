@@ -147,10 +147,10 @@ class Task:
 
 
 class FabTwin:
-    def __init__(self, now: datetime | None = None, era: int | None = None):
+    def __init__(self, now: datetime | None = None, era: int | None = None, truth: dict | None = None):
         self.now = now or datetime.now(timezone.utc)
         self.era = CURRENT_ERA if era is None else era
-        self.truth = truth_for_era(self.era)
+        self.truth = truth or truth_for_era(self.era)  # truth：压力测试用的假想变更（孪生已同步、记忆还没跟上）
 
     def make_task(self, spec: TaskSpec, seed: int, force_cause: str | None = None) -> Task:
         """force_cause 仅供构造分层测试集使用；练习时根因永远按本厂真实分布抽取。"""

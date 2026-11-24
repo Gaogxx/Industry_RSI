@@ -37,7 +37,23 @@ def render_8d(case: dict, state: dict, analysis_id: int | None = None) -> str:
         L.append(f"| {label} | {_c(p.get(k, '-'))} |")
     L += ["", "## D3 围堵措施"] + [f"- {c}" for c in state.get("containment", [])]
 
-    L += ["", "## D4 根因分析", "", "### 统计证据（MES / YMS / FDC）"]
+    L += ["", "## D4 根因分析"]
+    hz = (state.get("harness") or {}).get("answer")
+    if hz:
+        ttt = (hz.get("inner") or {}).get("ttt")
+        names = {h["cause_code"]: h["name"] for h in hyps}
+        L += ["", "### 可靠度与快慢双脑",
+              f"- 路由：**{'快脑（统计内核 + 记忆，直接给结论）' if hz['route'] == 'fast' else '慢脑（双层递归：证据族对照 + 近邻练习）'}**"
+              + (f"；原因：{'、'.join(hz['reasons'])}" if hz.get("reasons") else ""),
+              f"- 首位根因是真因的校准概率：**{hz['reliability']:.0%}**；90% 把握的根因集合：" +
+              "、".join(f"「{names.get(c, c)}」" for c in hz["set"]),
+              f"- 结论状态：{hz['text']}"]
+        if ttt:
+            L.append(f"- 近邻练习（测试时训练）：{ttt['tasks']} 道孪生题，探测命中 {ttt['probe_before']}/{ttt['probe_n']} → "
+                     f"{ttt['probe_after']}/{ttt['probe_n']}，{'采纳练习后的排序' if ttt['adopt'] else '保留线上记忆的排序'}")
+        for x in hz.get("experiences") or []:
+            L.append(f"- 用到的经验（{'事实' if x['track'] == 'fact' else '做法'}，成功率 {x['p']:.0%}，{x['n']} 次）：{x['text']}")
+    L += ["", "### 统计证据（MES / YMS / FDC）"]
     s = ev.get("summary") or {}
     if s:
         L.append(f"- 批次：{s.get('lots')} 个，失效 {s.get('fail_lots')} 个" +

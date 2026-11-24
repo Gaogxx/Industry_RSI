@@ -274,6 +274,7 @@
           "<h3>鱼骨图（6M，★ 为首位根因所在维度）</h3>" + fishbone(an.ishikawa || {}, rootCats, symName(c.symptom)) +
           '<h3>这份分析有用吗？</h3><div class="stars" data-aid="' + an.id + '">' + [1, 2, 3, 4, 5].map(function (n) { return '<button data-n="' + n + '" aria-label="' + n + ' 星">★</button>'; }).join("") + "</div>" +
           '<details style="margin-top:12px"><summary>完整 8D 报告</summary>' + md(an.report_md) + "</details></div>";
+        h += harnessPanel(cf && cf.harness, an.hypotheses);
       } else h += '<div class="panel empty">尚未分析。点击右上角「运行分析工作流」，或在左侧对话输入「分析 ' + esc(c.code) + "」。</div>";
       h += '</div><div class="grid" style="align-content:start">';
       if (c.status !== "closed") {
@@ -489,10 +490,77 @@
       sessions.map(function (x) { var sm = x.summary || {};
         return '<tr class="click' + (x.id === sid ? " sel" : "") + '" data-href="#/evolution?tab=rsi&s=' + x.id + '"><td class="num">' + x.id + '</td><td class="num">' + d10(x.created_at) + "</td><td>" + esc(trigName(x.trigger)) + '</td><td class="small">' + changeText(x.config) + '</td><td class="num">' + hitCell(sm) + '</td><td class="num">' + (sm.tasks || "-") + '</td><td class="num">' + (sm.refits_accepted == null ? "-" : sm.refits_accepted + " / " + sm.refits_rejected) + "</td></tr>"; }).join("") + "</tbody></table></div>";
   }
+  // ── Harness：快慢双脑 · 双层递归 · RRSI 策略进化 · 可靠度模型 ─────────
+  var REASON_ZH = { missing_data: "缺少批次数据", critical: "S1 重大", first_seen: "无先例", prior_error: "同条件快脑答错过", audit: "周期抽查",
+    low_reliability: "可靠度不足", ambiguous: "集合不止一个根因" };
+  var PARAM_ZH = { fast_min_reliability: "快脑可靠度门槛", audit_every: "强制抽查间隔", ttt_tasks: "近邻练习题量", ttt_keep: "旧份额保留比例",
+    ttt_prior_weight: "练习对临时先验的权重", adopt_min_gain: "采纳所需探测提升", use_experience: "按经验库调整" };
+  function harnessPanel(hz, hyps) {
+    if (!hz) return "";
+    var names = {}; (hyps || []).forEach(function (h) { names[h.cause_code] = h.name; });
+    var inner = hz.inner || {}, ttt = inner.ttt, probes = inner.probes || [];
+    return '<div class="panel"><div class="page-head" style="margin-bottom:8px"><h2 style="margin:0">快慢双脑</h2>' +
+      '<span class="badge ' + (hz.route === "fast" ? "ok" : "accent") + '">' + (hz.route === "fast" ? "快脑：统计内核 + 记忆" : "慢脑：双层递归") + "</span>" +
+      '<span class="badge ' + (hz.status === "supported" ? "ok" : "warn") + '">' + (hz.status === "supported" ? "可直接执行" : "需现场鉴别") + "</span></div>" +
+      '<div class="mini-stats"><span>首位是真因的校准概率 <b>' + pct(hz.reliability) + "</b></span><span>90% 把握的根因集合 <b>" + hz.set.map(function (c) { return esc(names[c] || c); }).join("、") + "</b></span></div>" +
+      (hz.reasons && hz.reasons.length ? '<p class="muted small">转慢脑原因：' + hz.reasons.map(esc).join("、") + "</p>" : "") +
+      (ttt ? '<div class="callout ' + (ttt.adopt ? "ok" : "") + '"><b>内层递归 · 近邻练习（测试时训练）</b>：课程 agent 针对本案出 ' + ttt.tasks + " 道孪生题，探测题命中 " + ttt.probe_before + "/" + ttt.probe_n + " → " + ttt.probe_after + "/" + ttt.probe_n +
+        "，" + (ttt.adopt ? "采纳练习后的排序" + (ttt.top_before !== ttt.top_after ? "（首位由「" + esc(names[ttt.top_before] || ttt.top_before) + "」改为「" + esc(names[ttt.top_after] || ttt.top_after) + "」）" : "") : "没有可靠提升，保留线上记忆的排序") + "。临时记忆用完即弃。</div>" : "") +
+      (probes.length ? '<p class="small">证据族对照：' + probes.map(function (p) { return "去掉" + esc(p.label) + (p.changed ? "后首位变为「" + esc(p.name) + "」" : "后首位不变"); }).join("；") + "</p>" : "") +
+      ((hz.experiences || []).length ? "<h3>用到的任务经验</h3><ul class=\"small\">" + hz.experiences.map(function (x) { return "<li>" + '<span class="badge">' + (x.track === "fact" ? "事实" : "做法") + "</span> " + esc(x.text) + ' <span class="muted">成功率 ' + pct(x.p) + " · " + x.n + " 次 · " + esc({ stable: "稳定", active: "生效", retired: "已停用", candidate: "候选" }[x.status] || x.status) + "</span></li>"; }).join("") + "</ul>" : "") +
+      "</div>";
+  }
+  function benchTable(b) {
+    if (!b) return '<div class="empty">还没有孪生对照结果</div>';
+    var r = b.results, row = function (name, x, note) { return "<tr><td>" + name + '</td><td class="num"><b>' + x.hit1 + '</b></td><td class="num">' + pct(x.fast_rate) + '</td><td class="num">' + x.fast_wrong + '</td><td class="num">' + (x.fast_precision == null ? "-" : pct(x.fast_precision)) + '</td><td class="num">' + pct(x.coverage) + '</td><td class="num">' + (x.cost_per_task == null ? "-" : x.cost_per_task) + '</td><td class="muted small">' + (note || "") + "</td></tr>"; };
+    var d = r.dual_vs_fast, s = r.stress;
+    return '<div class="table-wrap"><table><thead><tr><th>同一批孪生 report 题</th><th>首位命中率</th><th>快脑接手</th><th>快脑答错</th><th>快脑准确率</th><th>保形覆盖</th><th>每题孪生练习</th><th></th></tr></thead><tbody>' +
+      row("只用快脑", r.fast_only, "所有题直接给结论") + row("快慢双脑（不做近邻练习）", r.dual_no_ttt, "只路由，慢脑不练习") +
+      row("快慢双脑 + 近邻练习", r.dual, "配对差 95% 区间 [" + (d.ci95[0] * 100).toFixed(1) + ", " + (d.ci95[1] * 100).toFixed(1) + "] 个百分点") + "</tbody></table></div>" +
+      '<div class="callout ' + (s.diff.ci95[0] > 0 ? "ok" : "") + '"><b>压力场景：产线刚变更、记忆还没跟上</b>（' + s.symptoms.map(symName).map(esc).join("、") + "：" + esc(s.change || "") + "）<br>只用快脑 <b>" + s.fast_only.hit1 + "</b> → 快慢双脑 + 近邻练习 <b>" + s.dual.hit1 + "</b>，配对差 95% 区间 [" + (s.diff.ci95[0] * 100).toFixed(1) + ", " + (s.diff.ci95[1] * 100).toFixed(1) + "] 个百分点；采纳近邻练习 " + s.dual.adopted + " 次。</div>" +
+      '<p class="muted small">report 题与 RRSI 搜索、选择用的题互不重叠。平常场景下记忆已经跟上产线，快慢双脑的价值主要是“哪些结论可以直接信”（快脑准确率）；近邻练习的价值在产线变更之后、RSI 会话之前这段时间。</p>';
+  }
+  function harnessFlow() {
+    return '<div class="flow"><div class="flow-src"><div class="flow-box ok"><b>快脑（System 1）</b><span>统计内核 + 可进化记忆，毫秒级给排序</span><span class="muted small">可靠度够、集合只有首位、经验没报过错 → 直接给结论</span></div>' +
+      '<div class="flow-box accent"><b>慢脑（System 2）· 内层递归</b><span>提议：近邻练习 / 证据族对照 → 探测：孪生题前后对比 → 合成：证明有效才改结论</span><span class="muted small">近邻练习 = 课程 agent 针对本案出题的测试时训练</span></div></div>' +
+      '<div class="flow-arrow"><b class="arr">→</b><span class="muted small">外层递归<br>经验反思</span></div>' +
+      '<div class="flow-box mem"><b>双轨任务经验库</b><span>事实：机台 ↔ 根因（现场确认 ≥3 次才生效）</span><span>做法：在什么条件下快脑可信 / 近邻练习有效</span><span>Beta 后验记成败；答错追责，失败多了停用（留档）</span>' +
+      '<span class="muted small">跨 run：RRSI 策略存档每周进化一次；可靠度模型按触发条件训练</span></div></div>';
+  }
+  function pageHarness(head) {
+    return api("harness").then(function (o) {
+      var r = o.receipts, ex = o.experiences, act = (o.models || []).find(function (m) { return m.status === "active"; });
+      var tiles = [[pct(r.total ? r.fast / r.total : 0), "快脑接手（共 " + r.total + " 次分析）"],
+        [r.fast_verified ? r.fast_correct + "/" + r.fast_verified : "-", "快脑结论经现场确认正确" + (r.fast_precision_ci95 ? "（95% 区间 " + pct(r.fast_precision_ci95[0]) + "–" + pct(r.fast_precision_ci95[1]) + "）" : "")],
+        [r.ttt_adopted + "/" + r.ttt, "近邻练习被采纳 / 做过"], [r.coverage == null ? "-" : pct(r.coverage), "保形集合覆盖现场真因（目标 90%）"],
+        [act ? "v" + act.id : "-", "可靠度模型 · ECE " + (act && act.metrics.candidate ? act.metrics.candidate.ece : "-")]];
+      var months = r.by_month.slice(-14), mx = Math.max.apply(null, months.map(function (m) { return m.fast + m.slow; }).concat([1]));
+      view.innerHTML = head + '<div class="tiles">' + tiles.map(function (t) { return '<div class="tile"><div class="v">' + esc(t[0]) + '</div><div class="l">' + esc(t[1]) + "</div></div>"; }).join("") + "</div>" +
+        '<div class="panel">' + harnessFlow() + "</div>" +
+        '<div class="panel" style="margin-top:16px"><div class="page-head" style="margin-bottom:6px"><h2 style="margin:0">孪生对照：快慢双脑有没有用</h2><span class="spacer"></span><button class="btn ghost sm" id="hz-bench">↻ 重跑对照</button></div>' + benchTable(o.benchmark) + "</div>" +
+        '<div class="grid g2" style="margin-top:16px"><div class="panel"><h2>每月路由（去年至今）</h2><div class="route-bars">' + months.map(function (m) { return '<div class="rb"><span class="rb-t"><i class="f" style="height:' + (m.fast / mx * 100) + '%"></i><i class="s" style="height:' + (m.slow / mx * 100) + '%"></i></span><span class="muted small">' + esc(m.month.slice(2)) + "</span></div>"; }).join("") + '</div><div class="legend"><span><i style="background:var(--ok)"></i>快脑</span><span><i style="background:var(--accent)"></i>慢脑</span></div>' +
+        "<h3>转慢脑的原因</h3><div class=\"chips\">" + Object.keys(r.reasons).sort(function (a, b) { return r.reasons[b] - r.reasons[a]; }).map(function (k) { return '<span class="chip">' + esc(REASON_ZH[k] || k) + " " + r.reasons[k] + "</span>"; }).join("") + "</div></div>" +
+        '<div class="panel"><h2>双轨任务经验库</h2><div class="chips">' + [["fact", "事实"], ["tip", "做法"]].map(function (t) { return ["stable", "active", "candidate", "retired"].map(function (s) { var n = ex.counts[t[0] + ":" + s]; return n ? '<span class="chip">' + t[1] + "·" + { stable: "稳定", active: "生效", candidate: "候选", retired: "已停用" }[s] + " " + n + "</span>" : ""; }).join(""); }).join("") + "</div>" +
+        '<ul class="timeline small" style="margin-top:8px;max-height:300px;overflow:auto">' + ex.items.slice(0, 14).map(function (x) { return '<li class="' + (x.status === "retired" ? "refute" : x.status === "stable" ? "confirm" : "") + '"><span class="badge">' + (x.track === "fact" ? "事实" : "做法") + "</span> " + esc(x.text) + ' <span class="muted">成功率 ' + pct(x.p) + " · " + x.n + " 次" + (x.retired_reason ? " · 停用：" + esc(x.retired_reason) : "") + "</span></li>"; }).join("") + "</ul></div></div>" +
+        '<div class="panel" style="margin-top:16px"><div class="page-head" style="margin-bottom:6px"><h2 style="margin:0">RRSI 策略存档（跨 run 继承）</h2><span class="muted small">在用版本：' + (o.policy.id ? "#" + o.policy.id : "默认") + "　" + Object.keys(o.policy.params).map(function (k) { return esc(PARAM_ZH[k] || k) + " " + o.policy.params[k]; }).join(" · ") + '</span><span class="spacer"></span><button class="btn ghost sm" id="hz-evolve">▶ 运行一次策略进化</button></div>' +
+        '<div class="table-wrap"><table><thead><tr><th>#</th><th>时间</th><th>改动（组件：原值 → 新值）</th><th>选择集命中率 / 压力题</th><th>每题孪生练习</th><th>结果</th></tr></thead><tbody>' +
+        o.archive.slice(0, 16).map(function (p) { var sel = p.scores && p.scores.select; return "<tr><td class=\"num\">" + p.id + '</td><td class="num">' + d10(p.created_at) + '</td><td class="small">' + (p.edits || []).map(function (e) { return "<b>" + esc(PARAM_ZH[e.component] || e.component) + "</b> " + e.from + " → " + e.to + (e.hypothesis ? '<div class="muted">' + esc(e.hypothesis) + "</div>" : ""); }).join("") + '</td><td class="num">' + (sel ? sel.hit1 + (sel.hit1_stress != null ? " / " + sel.hit1_stress : "") : "-") + '</td><td class="num">' + (sel && sel.cost_per_task != null ? sel.cost_per_task : "-") + "</td><td>" + '<span class="badge ' + ({ active: "ok", accepted: "ok", rejected: "warn", rolled_back: "warn" }[p.status] || "") + '">' + esc({ active: "在用", accepted: "采纳", rejected: "拒绝", retired: "已替换", rolled_back: "已回滚", candidate: "候选" }[p.status] || p.status) + '</span><div class="muted small">' + esc(p.note || "") + "</div></td></tr>"; }).join("") + "</tbody></table></div>" +
+        '<p class="muted small">RRSI 的正则：每个候选能捆绑的改动数随代数退火（3 → 2 → 1）；改进落在噪声带内只有减少孪生练习才接受；快脑答错数增加直接拒绝；没有实测收益的改动剪回默认。评估题分 search / select / report 三份互不重叠，各含两种产线变更压力题。</p></div>' +
+        '<div class="panel" style="margin-top:16px"><div class="page-head" style="margin-bottom:6px"><h2 style="margin:0">训练机制：可靠度模型（与免训练的 RSI 并存）</h2><span class="muted small">待触发：' + (o.triggers.length ? o.triggers.map(esc).join("、") : "无") + '</span><span class="spacer"></span><button class="btn ghost sm" id="hz-train">▶ 开一个训练窗口</button></div>' +
+        '<p class="muted small" style="margin-top:0">训练的是一个 9 个参数的逻辑回归：输入快脑排序的特征，输出“首位根因是真因”的概率。它不改根因排序，只决定可靠度、快慢路由和报告里的置信说明。标签来自孪生（程序知道真因）和工程师确认的收据，模型自己的结论从不当标签。</p>' +
+        '<div class="table-wrap"><table><thead><tr><th>#</th><th>时间</th><th>触发</th><th>健康门</th><th>样本池信息量</th><th>对数损失差（候选 − 在用）</th><th>ECE</th><th>保形阈值 / 覆盖</th><th>结果</th></tr></thead><tbody>' +
+        (o.models || []).map(function (m) { var me = m.metrics || {}, d = me.logloss_diff, w = m.window || {}; return "<tr><td class=\"num\">" + m.id + '</td><td class="num">' + d10(m.created_at) + '</td><td class="small">' + esc(w.trigger || "") + '</td><td class="small">' + (w.health && w.health.ok ? "通过" : "未通过") + (w.attempts > 1 ? "（重试 " + (w.attempts - 1) + " 次）" : "") + '</td><td class="num">' + (w.informative == null ? "-" : pct(w.informative)) + (w.refresh_next ? ' <span class="badge warn">下次换池</span>' : "") + '</td><td class="num">' + (d ? d.mean + " [" + d.ci95[0] + ", " + d.ci95[1] + "]" : "-") + '</td><td class="num">' + (me.candidate ? me.candidate.ece : "-") + '</td><td class="num">' + (m.conformal ? m.conformal.q + " / " + pct(m.conformal.coverage_holdout) : "-") + "</td><td>" + '<span class="badge ' + ({ active: "ok", rejected: "warn", failed: "warn" }[m.status] || "") + '">' + esc({ active: "在用", rejected: "未晋升", failed: "健康门失败", retired: "已替换" }[m.status] || m.status) + "</span></td></tr>"; }).join("") + "</tbody></table></div>" +
+        '<p class="muted small">何时训练：新增 20 条现场确认 / 孪生同步了产线变更 / 样本池信息量跌到 2 个窗口前的 85% 以下（参照 A-RSI）。晋升：留出集上对数损失的配对 bootstrap 95% 区间上界 ≤ 0 且 ECE 不变差；健康门不过重试一次，再不过保留上一版。</p></div>';
+      var bind = function (id, path, msg) { var b = document.getElementById(id); if (b) b.onclick = function () { b.disabled = true; b.textContent = "运行中…"; post(path).then(function () { toast(msg); route(); }).catch(function (e) { toast(e.message); b.disabled = false; }); }; };
+      bind("hz-bench", "harness/benchmark", "孪生对照已更新"); bind("hz-evolve", "harness/evolve", "策略进化完成"); bind("hz-train", "harness/train", "训练窗口完成");
+    });
+  }
+
   var EVO_TABS = [
     ["overview", "概览", "看自我进化有没有用：两种学习加起来让根因命中率提高了多少、证据权重学成了什么样、和不做 RSI 相比好多少。"],
     ["rsi", "RSI 学习", "智能体在数字孪生里自己出题、作答、验证：每次会话的得分曲线、每道练习题，以及每次权重更新是否通过验收门。"],
-    ["continual", "持续学习", "从产线真实案例学习：工程师每确认一个根因，根因先验和机台热点就更新；学习曲线对比“持续学习”和“冻结在教科书先验”。"]];
+    ["continual", "持续学习", "从产线真实案例学习：工程师每确认一个根因，根因先验和机台热点就更新；学习曲线对比“持续学习”和“冻结在教科书先验”。"],
+    ["harness", "快慢双脑", "Harness 层：快脑可靠就直接给结论，否则慢脑做双层递归（近邻练习 = 测试时训练 + 证据族对照）；任务经验分事实 / 做法两轨；RRSI 每周进化一次策略；可靠度模型按触发条件训练。"]];
   function evoTabs(tab) {
     var cur = EVO_TABS.find(function (t) { return t[0] === tab; }) || EVO_TABS[0];
     return '<div class="subtabs">' + EVO_TABS.map(function (t) { return '<a href="#/evolution?tab=' + t[0] + '" class="' + (t[0] === cur[0] ? "on" : "") + '">' + t[1] + "</a>"; }).join("") + '</div><p class="tab-desc">' + cur[2] + "</p>";
@@ -500,7 +568,7 @@
 
   function pageEvolution(params) {
     var q = new URLSearchParams(params || ""), tab = { twin: "rsi", line: "continual" }[q.get("tab")] || q.get("tab") || (q.get("s") ? "rsi" : "overview");
-    if (["overview", "rsi", "continual"].indexOf(tab) < 0) tab = "overview";
+    if (["overview", "rsi", "continual", "harness"].indexOf(tab) < 0) tab = "overview";
     var head = '<div class="page-head"><h1>自我进化</h1><span class="muted small">RSI 学习和持续学习是同一件事：把验证过的结论写进同一套记忆，区别只在标签来自数字孪生还是产线。</span><span class="spacer"></span>' +
       '<button class="btn" id="evo-run">▶ 启动自我进化会话</button></div>' + evoTabs(tab);
     var bindRun = function () { var b = document.getElementById("evo-run"); if (b) b.onclick = function () { sendChat("启动一次自我进化会话", "rsi"); }; };
@@ -541,6 +609,7 @@
         bindRows(); bindRun();
       });
     });
+    if (tab === "harness") return pageHarness(head).then(bindRun);
     if (tab === "continual") return Promise.all([api("learning/curve"), api("learning/edges"), api("learning/events?limit=60"), api("memory/hotspots")]).then(function (r) {
       var curve = r[0], edges = r[1], events = r[2], hs = r[3], s = curve.latest ? curve.latest.summary : {};
       var bySym = {}; edges.forEach(function (e) { (bySym[e.symptom] = bySym[e.symptom] || []).push(e); });
@@ -621,7 +690,8 @@
     var c = a.content || {}, body = "";
     var target = c.route ? (/^\/cases\/(\d+)/.exec(c.route) ? code(/^\/cases\/(\d+)/.exec(c.route)[1]) : PAGE_NAME[c.route.split("?")[0]] || "页面") : "";
     var open = c.route ? '<a class="btn sm' + (c.open ? "" : " ghost") + '" href="#' + esc(c.route) + '">打开' + esc(target) + " →</a>" : "";
-    if (a.type === "kaizen.case" && c.top) body = c.top.map(function (h, i) { return '<div class="mini-hyp"><span>' + (i + 1) + ". " + esc(h.name) + '</span><span class="bar"><i style="width:' + Math.max(2, h.posterior * 100) + '%"></i></span><b class="num">' + pct(h.posterior) + "</b></div>"; }).join("") + (c.changed ? '<div class="muted small">🧠 学到的知识改变了首位根因</div>' : "");
+    var hz = c.harness ? '<div class="mini-stats"><span><b>' + (c.harness.route === "fast" ? "快脑" : "慢脑") + "</b>" + (c.harness.ttt ? "（近邻练习" + (c.harness.ttt.adopt ? "已采纳" : "未采纳") + "）" : "") + "</span><span>首位可靠度 <b>" + pct(c.harness.reliability) + "</b></span><span>90% 把握集合 <b>" + c.harness.set_n + "</b> 个根因</span></div>" : "";
+    if (a.type === "kaizen.case" && c.top) body = c.top.map(function (h, i) { return '<div class="mini-hyp"><span>' + (i + 1) + ". " + esc(h.name) + '</span><span class="bar"><i style="width:' + Math.max(2, h.posterior * 100) + '%"></i></span><b class="num">' + pct(h.posterior) + "</b></div>"; }).join("") + (c.changed ? '<div class="muted small">🧠 学到的知识改变了首位根因</div>' : "") + hz;
     else if (a.type === "kaizen.rsi") {
       body = '<div class="mini-stats"><span>阶段 <b>' + esc(c.phase || "-") + "</b></span><span>已练 <b>" + (c.done || 0) + "</b> 题 · 通过 " + (c.passes || 0) + "</span><span>首位命中率 <b>" + (c.hit1_before == null ? "-" : c.hit1_before + " → " + c.hit1) + "</b></span></div>";
       if (LIVE && c.route && c.route.indexOf("s=" + (LIVE.state || {}).session_id) > 0) body += '<div class="act-live">' + rsiCurve(LIVE.state.curve || [], { h: 150 }) + '<ul class="timeline small">' + LIVE.log.slice(-5).map(function (l) { return '<li class="' + (l[1] || "") + '">' + l[0] + "</li>"; }).join("") + "</ul></div>";
