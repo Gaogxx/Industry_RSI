@@ -9,7 +9,6 @@
 [![AG-UI](https://img.shields.io/badge/AG--UI-1.0-111827)](https://docs.ag-ui.com/)
 [![DBOS](https://img.shields.io/badge/DBOS-3.6-2E6BE6)](https://www.dbos.dev/)
 [![Pydantic AI](https://img.shields.io/badge/Pydantic%20AI-2.71-E92063)](https://ai.pydantic.dev/)
-[![MCP](https://img.shields.io/badge/MCP-2026--07--28%20可选-6B4FBB)](https://modelcontextprotocol.io/)
 [![SQLite](https://img.shields.io/badge/SQLite-WAL-003B57?logo=sqlite)](https://sqlite.org/)
 [![DeepSeek](https://img.shields.io/badge/LLM-DeepSeek%20V4%20%7C%20Qwen4-4D6BFE)](https://api-docs.deepseek.com/)
 [![Tests](https://img.shields.io/badge/tests-73%20passed-success)](backend/tests)
@@ -31,12 +30,8 @@
 
 ### 核心架构理念
 
-- **神经-符号复合**：根因排序由统计证据（Fisher 精确检验、晶圆图空间特征、FDC σ 偏移、PM 时序）和可进化记忆给出，过程确定、可审计；大模型只负责理解、解释和写作，没有 Key 时整套系统照常运行。
 - **RSI v2 + TTSE**：参照 RSIAgent（arXiv:2609.15364），三个职责分离的 agent 在数字孪生里自主练习，**不训练模型参数**。在论文方案上做了几点改进：学习“每类证据该信多少”、加入证据校准批并按信息价值选题、每次更新都必须通过验收门；三个 agent 的经验按 TTSE（arXiv:2609.24289）分事实 / 做法两轨，失败追责到具体条目。
-- **快脑小模型（v0.7）**：快脑不再是计数，而是一个训练出来的 Wide & Deep & Cross 排序网络，宽部分从贝叶斯证据权重起步。训练用在模型上：A-RSI 决定何时开训练窗口、最后是否晋升；RSI-Opt 内层在训练中做决定，外层跨 run 进化训练策略。通过晋升门才拿到快脑的裁决权，否则退回贝叶斯。
 - **Harness 层**：参照 Agnes Harness 的快慢双脑与 Google Harness² 的双层递归。快脑把握够就直接给结论；否则慢脑让“近邻训练”和“贝叶斯意见”在本案的近邻探测题上和快脑比，明显赢了才改判。“哪个组件在什么条件下有效”写进改进经验库；RRSI 有触发才从改进库提议修改基础 harness。
-- **三层三套门**：RSIAgent 的验收门、快脑训练的健康门与晋升门、harness 的选择门 + 上线门 + 观察期，全部用配对统计、分组护栏和轮换的留出题；报告里给出校准概率和“覆盖真因 90%”的根因集合，集合不止一个根因就标“需现场鉴别”。
-- **人在回路**：关案会改写产线记忆，agent 不会直接执行，而是以 AG-UI 中断结束这次运行，你批准后才写入；批准人和备注进入审计日志。
 
 ### 适用场景
 
@@ -45,7 +40,7 @@
 - **经验沉淀**：工程师每确认一个根因，根因先验、机台热点、证据权重、排查流程都会更新，并能追溯到具体案例
 - **Agent 工程实践**：自我改进的三角色制衡、验收门、DBOS 持久化工作流、AG-UI 中断与恢复、离线降级
 
-**一句话总结**：不只是一个根因分析工具，而是一个会自己练习、会从产线学习、每一步都能追溯和撤销的工业质量 Agent。
+**一句话总结**：不只是一个根因分析工具，而是一个会自己练习、会从产线学习、每一步都能追溯和撤销的工业质量 RSI。
 
 ---
 
@@ -161,47 +156,7 @@ flowchart LR
 
 演示库里过去一年有 11 次产线变更。变更后的 11 次会话中，10 次提升了留出集首位命中率（+0.6 ～ +5.4）；另 1 次（老化板换插座）变更本身没有让命中率下降，结果标为“持平”并写明原因。
 
-### 亮点二：学“每类证据该信多少”，而不只是“本厂常见什么”
-
-v0.3 照搬论文方案，10 个种子复核后发现提升只是噪声（56.0 → 57.6）。诊断原因是手工设定的证据可信度偏保守：先验学得越有把握，强证据题反而从 88.5 掉到 78.2。v2 改为学习**证据权重**：以专家设定 ×1 为中心的条件 logit
-
-```text
-log P(根因 c | 证据 e) = Σ_k w_k · log factor_k(c) − log Z,    w = (先验, 共性分析, FDC, PM 时序, 机台热点)
-```
-
-用牛顿法加岭惩罚（向 w = 1 收缩）拟合，样本满 20 个才启用。结果：共性分析（Fisher 检验）的说服力被学成专家设定的 3～5 倍，FDC 约 1.2～1.9 倍，先验、PM、热点基本不变。
-
-### 亮点三：三层三套门，防止“越改越差”
-
-参照 OpsHarness（arXiv:2608.25661）：去掉验收门的自进化比不进化还差。Kaizen 每一层都有自己的门，名字不混用：
-
-| 层 | 门 | 做法 |
-|---|---|---|
-| RSIAgent（记忆与证据权重） | 验收门 | 240 题封存面板；对数损失配对 bootstrap 区间上界 ≤ +0.01 且平均差 ≤ 0、命中率下界 ≥ −2 个百分点；任何症状变差不超过 0.15；每采纳一次就换一块全新的面板 |
-| 快脑模型训练 | 健康门 + 晋升门 | 健康门：有限、不爆炸、学到了、不塌缩、不过拟合、温度正常、分症状不比贝叶斯差；晋升门：每晋升一次换一块全新的留出集，对数损失与命中率配对区间、ECE、对贝叶斯不退步、分症状护栏、保形覆盖 ≥ 87%、产线时间留出 |
-| harness 配置（RRSI） | 选择门 + 上线门 + 观察期 | 选择门：白名单与防泄漏审查、search 初筛、select 验收（按候选数做 Bonferroni 校正）；上线门：每次全新的 report 题 + 产线回放；观察期：错误率显著高于上一版就回滚 |
-
-v0.6 的门只比点估计、同一块面板一直用、只看平均；v0.7 都改成了配对统计 + 分组护栏 + 轮换（同一块留出集反复用来做决定，会被“调”进去，Dwork et al. 2015）。
-
-### 亮点四：持久化工作流与降级
-
-- **DBOS 3.6**：分析流程、RSI 会话、冷启动基准、夜间学习都是持久化工作流，每一步检查点到数据库，崩溃后从最后完成的那一步继续，不重复调用大模型。agent 决定每一步做什么，DBOS 负责记下来、断了接着跑。
-- **离线可用**：没有配置大模型 Key 时，统计 + 贝叶斯内核仍然给出完整的排序、5-Why、CAPA 和 8D 报告；大模型失败时自动降级。
-- **代码模式调查员**：配置大模型后，模型可以写 Python 在 Monty 沙箱里切分批次 / FDC / 晶圆图数据核查假设，结论以似然因子进入排序。
-
-### 亮点五：快脑是一个训练出来的小模型，训练机制用在模型上
-
-| 部分 | 参照 | Kaizen 怎么做 |
-|---|---|---|
-| 网络 | Wide & Deep（Google 2016）、DCN-v2（Google 2021）、列表式 softmax、温度缩放 | 宽部分从贝叶斯证据权重起步（未训练时 = 贝叶斯），深部分一层隐层，DCN-v2 交叉层（默认开启，秩 4），根因 ID 嵌入与偏置；纯 Python，几百个参数，毫秒级 |
-| 特征 | — | 贝叶斯 5 个证据因子 + 乘积模型表达不了的结构信号（弱机台信号 × 热点记忆、变点是否在本工序、PM 是否在本工序机台……）+ **原始信号**：用连续良率 / 失效率，在整体变点之后的时间窗里逐工序、逐机台做 Welch t 检验（不二值化），再看变点前是否本来就差、是否刚做过 PM；刻意剔除会泄露答案的仿真伪迹 |
-| 训练窗口 | A-RSI（arXiv:2610.38568） | 事件触发（新确认、产线变更、样本池饱和、慢脑频繁推翻快脑、产线命中率下滑）；课程 agent 按固定配额出题、孪生给标签；从上一版继续训练；健康门不过重试一次、再不过就停；晋升门见亮点三 |
-| 训练策略 | RSI-Opt（arXiv:2610.32026） | 内层：每个 epoch 末控制器决定继续 / 减半 / 回滚 / 停止；外层：跨 run 进化学习率、结构、正则、出题配比，噪声带内只接受更便宜或更简单的（交叉层的秩例外：必须显著更好才改） |
-| 训练知识库 | RSI-Opt 的跨 run 知识 | 事实（各症状当前首位根因、模型偏弱的分组）与做法（控制器规则、出题配比），失败追责、停用留档；事实被推翻（产线变了）就给该症状加倍出题 |
-
-**没用 GBDT 的原因**：小规模表格数据上 GBDT 往往更强（Grinsztajn et al. 2022），但它要下载原生库，也不方便锚定上一版做连续训练。
-
-### 亮点六：Harness 层——快慢双脑、慢脑探测裁决、RRSI 进化基础 harness
+### 亮点二：Harness 层——快慢双脑、慢脑探测裁决、RRSI 进化基础 harness
 
 | 机制 | 参照 | Kaizen 怎么做 |
 |---|---|---|
@@ -211,9 +166,35 @@ v0.6 的门只比点估计、同一块面板一直用、只看平均；v0.7 都�
 | 回流到快脑 | Agnes：System 2 蒸馏到 System 1 | 慢脑推翻快脑 ≥ 8 次触发训练窗口，被推翻多的症状加倍出题；确认的案例进入下一次训练 |
 | 跨 run 进化 | RRSI（arXiv:2609.24972） | 进化组件开关、旋钮与**条件规则**（只从改进库提议、过防泄漏审查）；改动预算退火 3 → 2 → 1、复杂度感知、剪枝；事件触发，连续两次没接受就退避；选择门 + 上线门 + 观察期 |
 
+### 亮点三：快脑是一个训练出来的小模型，训练机制用在模型上
+
+| 部分 | 参照 | Kaizen 怎么做 |
+|---|---|---|
+| 网络 | Wide & Deep（Google 2016）、DCN-v2（Google 2021）、列表式 softmax、温度缩放 | 宽部分从贝叶斯证据权重起步（未训练时 = 贝叶斯），深部分一层隐层，DCN-v2 交叉层（默认开启，秩 4），根因 ID 嵌入与偏置；纯 Python，几百个参数，毫秒级 |
+| 特征 | — | 贝叶斯 5 个证据因子 + 乘积模型表达不了的结构信号（弱机台信号 × 热点记忆、变点是否在本工序、PM 是否在本工序机台……）+ **原始信号**：用连续良率 / 失效率，在整体变点之后的时间窗里逐工序、逐机台做 Welch t 检验（不二值化），再看变点前是否本来就差、是否刚做过 PM；刻意剔除会泄露答案的仿真伪迹 |
+| 训练窗口 | A-RSI（arXiv:2610.38568） | 事件触发（新确认、产线变更、样本池饱和、慢脑频繁推翻快脑、产线命中率下滑）；课程 agent 按固定配额出题、孪生给标签；从上一版继续训练；健康门不过重试一次、再不过就停；晋升门见亮点四 |
+| 训练策略 | RSI-Opt（arXiv:2610.32026） | 内层：每个 epoch 末控制器决定继续 / 减半 / 回滚 / 停止；外层：跨 run 进化学习率、结构、正则、出题配比，噪声带内只接受更便宜或更简单的（交叉层的秩例外：必须显著更好才改） |
+| 训练知识库 | RSI-Opt 的跨 run 知识 | 事实（各症状当前首位根因、模型偏弱的分组）与做法（控制器规则、出题配比），失败追责、停用留档；事实被推翻（产线变了）就给该症状加倍出题 |
+
+### 亮点四：三层三套门，防止“越改越差”
+
+参照 OpsHarness（arXiv:2608.25661）：去掉验收门的自进化比不进化还差。Kaizen 每一层都有自己的门，名字不混用：
+
+| 层 | 门 | 做法 |
+|---|---|---|
+| RSIAgent（记忆与证据权重） | 验收门 | 240 题封存面板；对数损失配对 bootstrap 区间上界 ≤ +0.01 且平均差 ≤ 0、命中率下界 ≥ −2 个百分点；任何症状变差不超过 0.15；每采纳一次就换一块全新的面板 |
+| 快脑模型训练 | 健康门 + 晋升门 | 健康门：有限、不爆炸、学到了、不塌缩、不过拟合、温度正常、分症状不比贝叶斯差；晋升门：每晋升一次换一块全新的留出集，对数损失与命中率配对区间、ECE、对贝叶斯不退步、分症状护栏、保形覆盖 ≥ 87%、产线时间留出 |
+| harness 配置（RRSI） | 选择门 + 上线门 + 观察期 | 选择门：白名单与防泄漏审查、search 初筛、select 验收（按候选数做 Bonferroni 校正）；上线门：每次全新的 report 题 + 产线回放；观察期：错误率显著高于上一版就回滚 |
+
+### 亮点五：持久化工作流与降级
+
+- **DBOS 3.6**：分析流程、RSI 会话、冷启动基准、夜间学习都是持久化工作流，每一步检查点到数据库，崩溃后从最后完成的那一步继续，不重复调用大模型。agent 决定每一步做什么，DBOS 负责记下来、断了接着跑。
+- **降级**：大模型调用失败或超时时自动降级，统计 + 贝叶斯内核仍然给出完整的排序、5-Why、CAPA 和 8D 报告。
+- **代码模式调查员**：配置大模型后，模型可以写 Python 在 Monty 沙箱里切分批次 / FDC / 晶圆图数据核查假设，结论以似然因子进入排序。
+
 ---
 
-## 📊 效果与诚实报告
+## 📊 效果报告
 
 > 全部基于模拟数据：机台、产品、数值均为虚构，不代表任何真实企业。
 
@@ -237,7 +218,7 @@ v2 拿到了约 96% 的可提升空间，最差的一个种子（70.21）也好�
 | 真实案例持续学习（预序回放：每个案例先预测、后学习，120 个已关闭案例） | 首位命中率 持续学习 68% vs 冻结在教科书先验 67%；近半程 78% vs 68%（产线变化越多，冻结先验越落后） |
 | RSI 修正的盲区 | Fab D 41 天前新导入扫描机，“套刻匹配误差”在产线上从未出现过；RSI 在孪生里练过之后，KZ-0138 的首位是正确根因（快脑模型 > 99.9%，贝叶斯 97.6%），只用教科书先验则会排“镜头热效应”第一 |
 
-**快脑小模型**（同一 480 题测试集；留出集每晋升一次换一块）：
+**快脑模型**（同一 480 题测试集；留出集每晋升一次换一块）：
 
 | 对比 | 结果 |
 |---|---|
@@ -309,7 +290,7 @@ git clone https://github.com/Gaogxx/Industry_RSI.git && cd Industry_RSI
 3. 模式选“自我进化”，发送 `启动一次自我进化会话`：对话里的卡片实时显示三阶段进度和得分曲线；
 4. 左侧栏打开“自我进化”，看概览 / RSI 学习（去年至今的会话时间线）/ 持续学习；案例库、CAPA 看板、改进周期、审计日志里都是去年至今的历史记录。
 
-接入大模型（可选）：
+接入大模型：
 
 ```bash
 KAIZEN_LLM_API_KEY=<你的 Key> KAIZEN_LLM_MODEL=deepseek-v4-pro ./scripts/dev-backend.sh
@@ -320,7 +301,7 @@ KAIZEN_LLM_API_KEY=<你的 Key> KAIZEN_LLM_MODEL=deepseek-v4-pro ./scripts/dev-b
 ### 生产部署
 
 ```bash
-cd deploy && cp .env.example .env && chmod 600 .env   # 填写 KAIZEN_API_KEY，可选 LLM_API_KEY
+cd deploy && cp .env.example .env && chmod 600 .env   # 填写 KAIZEN_API_KEY 和 LLM_API_KEY
 docker compose up -d --build                         # Kaizen + Nginx，http://<服务器>/
 ```
 
@@ -332,7 +313,7 @@ docker compose up -d --build                         # Kaizen + Nginx，http://<
 cd backend && .venv/bin/python -m pytest -q
 ```
 
-73 个测试（离线；包含整套演示数据生成，本机空闲时约 2–3 分钟，机器满负载时约 5 分钟）：统计内核、贝叶斯学习、DBOS 端到端、RSI v2（孪生 / 三角色 / 证据权重 / 验收门 / 知识梯度 / 消融 / 在线会话 / TTSE 双轨的追责与测试时检索）、快脑小模型（贝叶斯等价初始化 / 原始信号定位机台且不用批次字段 / 旧维度模型退回贝叶斯 / 交叉层秩默认 4、显著更好才改 / 反向传播数值校验 / 训练窗口的健康门与晋升门 / RSI-Opt 外层存档 / 训练知识库的事实推翻与做法停用）、Harness（路由规则 / 探测裁决 / 近邻训练追回产线变更 / 改进库的门控与停用 / 条件规则白名单与防泄漏审查 / RRSI 事件触发与退避 / 观察期统计回滚）、AG-UI、MCP、脚本化 LLM、鉴权。
+73 个测试（离线；包含整套演示数据生成，本机空闲时约 2–3 分钟，机器满负载时约 5 分钟）：统计内核、贝叶斯学习、DBOS 端到端、RSI v2（孪生 / 三角色 / 证据权重 / 验收门 / 知识梯度 / 消融 / 在线会话 / TTSE 双轨的追责与测试时检索）、快脑模型（贝叶斯等价初始化 / 原始信号定位机台且不用批次字段 / 旧维度模型退回贝叶斯 / 交叉层秩默认 4、显著更好才改 / 反向传播数值校验 / 训练窗口的健康门与晋升门 / RSI-Opt 外层存档 / 训练知识库的事实推翻与做法停用）、Harness（路由规则 / 探测裁决 / 近邻训练追回产线变更 / 改进库的门控与停用 / 条件规则白名单与防泄漏审查 / RRSI 事件触发与退避 / 观察期统计回滚）、AG-UI、MCP、脚本化 LLM、鉴权。
 
 ---
 
@@ -342,33 +323,36 @@ cd backend && .venv/bin/python -m pytest -q
 Industry_RSI/
 ├── backend/
 │   ├── app/
-│   │   ├── main.py              # 服务入口：/ 控制台 · /agui · /api · /mcp（可选）· /healthz
-│   │   ├── agui.py              # AG-UI 1.0 端点：事件映射、关案中断与恢复、自我进化直播
-│   │   ├── chat.py              # 对话技能：分析 / 建案 / 追问 / 确认根因 / 改进教练
-│   │   ├── api.py               # REST：案例、CAPA、学习曲线、证据权重、RSI 会话、审计
-│   │   ├── services.py          # 建案、分析、关案学习、CAPA
-│   │   ├── agent/               # 分析工作流（DBOS 步骤）、提示词、8D 报告、代码模式调查员
-│   │   ├── fab/                 # 产线模型（工段 / 症状 / 根因）、统计内核、知识图谱、学习与回放、演示数据生成
-│   │   ├── rsi/                 # RSI v2：数字孪生、三角色、BRS/CAL/DRS 引擎、证据权重与验收门、TTSE 双轨记忆、工作流
-│   │   ├── fastbrain/           # 快脑小模型：特征、Wide & Deep & Cross 网络、A-RSI 训练窗口、RSI-Opt 内外层、训练知识库
-│   │   ├── harness/             # Harness 层：快慢双脑、慢脑探测裁决、改进经验库、组件配置与条件规则、RRSI
-│   │   ├── ledger.py · stats.py # Beta 账本（经验条目共用）、配对 bootstrap 与 Wilson 区间
-│   │   ├── improvement.py       # KPI、帕累托、改进周期
-│   │   ├── mcp_server.py        # 可选 MCP 工具与 MCP Apps 看板
-│   │   ├── models.py · db.py    # 数据模型与数据库（结构变化时自动备份旧库）
-│   │   ├── seed.py              # 演示数据：按时间回放去年至今的案例、CAPA、产线变更、改进周期、RSI 会话、审计
-│   │   └── static/              # 控制台：index.html · app.js · styles.css（零构建）
-│   ├── tests/                   # pytest（离线）
+│   │   ├── main.py                 # 服务入口：/ 控制台 · /agui · /api · /mcp（可选）· /healthz
+│   │   ├── agui.py                 # AG-UI 1.0 端点：事件映射、关案中断与恢复、自我进化直播
+│   │   ├── chat.py                 # 对话技能：分析 / 建案 / 追问 / 确认根因 / 改进教练
+│   │   ├── api.py                  # REST：案例、CAPA、学习曲线、证据权重、RSI 会话、快脑训练、harness、审计
+│   │   ├── services.py             # 建案、分析、关案学习、CAPA
+│   │   ├── agent/                  # 分析工作流（DBOS 步骤）、提示词、结构化输出、8D 报告、代码模式调查员
+│   │   ├── fab/                    # 产线模型（工段 / 症状 / 根因）、统计内核与原始信号、知识图谱、产线侧学习与回放、数据模拟器
+│   │   ├── rsi/                    # RSI v2：数字孪生、三角色、BRS/CAL/DRS 引擎、证据权重与验收门、TTSE 双轨记忆、工作流
+│   │   ├── fastbrain/              # 快脑模型：特征、Wide & Deep & Cross 网络、推理、A-RSI 训练窗口、RSI-Opt 内外层、训练知识库
+│   │   ├── harness/                # Harness 层：快慢双脑、慢脑探测裁决、改进经验库、组件配置与条件规则、RRSI
+│   │   ├── llm.py                  # 大模型接入（Pydantic AI，OpenAI 兼容端点，失败时降级）
+│   │   ├── retrieval.py            # 相似案例混合检索（BM25 + 可选向量，RRF 融合）
+│   │   ├── durable.py              # DBOS 持久化工作流初始化
+│   │   ├── ledger.py · stats.py    # Beta 账本（经验条目共用）、配对 bootstrap 与 Wilson 区间
+│   │   ├── improvement.py          # KPI、帕累托、改进周期
+│   │   ├── mcp_server.py           # 可选 MCP 工具与 MCP Apps 看板
+│   │   ├── auth.py · config.py     # Bearer Token 鉴权（读写分离）、运行配置（只读环境变量）
+│   │   ├── models.py · db.py       # 数据模型与数据库（结构变化时自动备份旧库）
+│   │   ├── seed.py                 # 演示数据：按时间回放去年至今的案例、CAPA、产线变更、改进周期、RSI 会话、快脑训练、审计
+│   │   └── static/                 # 控制台：index.html · app.js · styles.css（零构建）· mcp_board.html
+│   ├── tests/                      # pytest（离线）
 │   ├── Dockerfile
 │   └── pyproject.toml
-├── deploy/                      # docker-compose.yml · nginx.conf · .env.example
-├── scripts/dev-backend.sh       # 本地启动
+├── deploy/                         # docker-compose.yml · nginx.conf · .env.example
+├── scripts/dev-backend.sh          # 本地启动
 └── docs/
     ├── 01-行业背景与调研.md
     ├── 02-架构设计.md
     ├── 03-部署运维.md
     ├── 04-芯片制造产线与前沿技术调研.md
-    ├── 05-RSI与Harness文献对照.md
     └── screenshots/
 ```
 
@@ -392,34 +376,37 @@ Industry_RSI/
 ## 📄 License & 免责声明
 
 - 代码采用 MIT License（见 [LICENSE](LICENSE)）。
-- 演示数据和数字孪生全部为模拟，机台、产品、数值均为虚构，不代表任何真实企业。系统给出的根因与措施需要由质量工程师确认后执行。
+- 系统给出的根因与措施需要由质量工程师确认后执行。
 
 ## 致谢
 
-本项目的做法直接参考了下面这些工作（逐条怎么用的，见 [docs/05-RSI与Harness文献对照.md](docs/05-RSI与Harness文献对照.md)）。
+本项目的做法参考了下面这些工作。
 
-**递归自我改进与自进化**
-- [RSIAgent](https://arxiv.org/abs/2609.15364)（[代码](https://github.com/AetherLabsAI/RSIAgent)）— 课程 / 执行 / 验证三角色的递归自我改进，Kaizen 的主线
-- [OpsHarness](https://arxiv.org/abs/2608.25661) — 去掉验收门的自进化比不进化还差；验收门的依据
+**RSI model**
 - [A-RSI](https://arxiv.org/abs/2610.38568) — 程序化出题、按日志换池、健康门与回滚；快脑训练窗口“何时更新、最后是否更新”
 - [RSI-Opt](https://arxiv.org/abs/2610.32026) — 训练过程中的决策点控制（内层）与跨 run 的策略进化（外层）
 - [SEAL](https://arxiv.org/abs/2607.24300) — “更新后的表现即奖励”；连续自编辑的遗忘问题
-- [五大路线综述](https://arxiv.org/abs/2607.07663) — 模型级 / 提示框架 / 记忆技能 / 自改代码 / 多智能体的取舍
+- [SPIN](https://arxiv.org/abs/2401.01335) · [Self-Rewarding](https://arxiv.org/abs/2401.10020) · [R-Zero](https://arxiv.org/abs/2508.05004) — 固定真值锚点、出题难度，以及“不把自己的高置信结论当标签”的教训
 - [Harness Evolution Hits a Ceiling](https://arxiv.org/abs/2610.11655) — 什么时候才值得训练权重
 
-**Harness 与经验**
+**RSI agent**
+- [RSIAgent](https://arxiv.org/abs/2609.15364)（[代码](https://github.com/AetherLabsAI/RSIAgent)）— 课程 / 执行 / 验证三角色的递归自我改进，Kaizen 的主线
+- [OpsHarness](https://arxiv.org/abs/2608.25661) — 去掉验收门的自进化比不进化还差；验收门的依据
+- [TTSE](https://arxiv.org/abs/2609.24289) — 事实 / 做法双轨经验、追责与停用；用在 RSIAgent 的三个 agent 上
+- [Bayesian-Agent](https://arxiv.org/abs/2606.08348) — 经验即假设，Beta 后验的停用 / 稳定阈值
+- [ACE](https://arxiv.org/abs/2510.04618) · [ReasoningBank](https://arxiv.org/abs/2509.25140) · [Voyager](https://arxiv.org/abs/2305.16291) · [Reflexion](https://arxiv.org/abs/2303.11366) — 经验 / 技能库的增量合并与验证后入库
+- [相关知识梯度](https://people.orie.cornell.edu/pfrazier/pub/CorrelatedKG.pdf)（Frazier, Powell & Dayanik）· [EPIG](https://arxiv.org/abs/2304.08151) · [贝叶斯实验设计综述](https://arxiv.org/abs/2302.14545) — 课程 agent 按信息价值出题
+- [五大路线综述](https://arxiv.org/abs/2607.07663) — 模型级 / 提示框架 / 记忆技能 / 自改代码 / 多智能体的取舍
+
+**RSI harness**
 - Agnes Harness 技术报告（AgnesAI-Labs，2026-11）与 Sys1 1.0 报告 — 快慢双脑（System 1 / System 2）、交还慢脑的情形、逐请求测试时训练、上线观察期
 - [Harness²](https://arxiv.org/abs/2610.14224)（[代码](https://github.com/google-research/harness2)）— 任务级 + 改进级的双层递归与改进经验库
 - [RRSI](https://arxiv.org/abs/2609.24972)（[代码](https://github.com/google-research/rrsi)）— 正则化的 harness 递归自改进：改动预算退火、稳定性下限、复杂度感知、剪枝
-- [TTSE](https://arxiv.org/abs/2609.24289) — 事实 / 做法双轨经验、追责与停用；用在 RSIAgent 的三个 agent 上
-- [Bayesian-Agent](https://arxiv.org/abs/2606.08348) — 经验即假设，Beta 后验的停用 / 稳定阈值
 - [Darwin Gödel Machine](https://arxiv.org/abs/2505.22954) — 跨 run 存档与父代采样
-- [ACE](https://arxiv.org/abs/2510.04618) · [ReasoningBank](https://arxiv.org/abs/2509.25140) · [Voyager](https://arxiv.org/abs/2305.16291) · [Reflexion](https://arxiv.org/abs/2303.11366) — 经验 / 技能库的增量合并与验证后入库
 - [ADAS](https://arxiv.org/abs/2408.08435) · [TextGrad](https://arxiv.org/abs/2406.07496) · [DSPy](https://arxiv.org/abs/2310.03714) · [GEPA](https://arxiv.org/abs/2507.19457) — 提示与框架进化的验证集准入、多次运行加区间做决定
-- [SPIN](https://arxiv.org/abs/2401.01335) · [Self-Rewarding](https://arxiv.org/abs/2401.10020) · [R-Zero](https://arxiv.org/abs/2508.05004) — 固定真值锚点、出题难度，以及“不把自己的高置信结论当标签”的教训
 - [AlphaEvolve](https://arxiv.org/abs/2506.13131) · [Gödel Agent](https://arxiv.org/abs/2410.04444) · [STOP](https://arxiv.org/abs/2310.02304) — 存档、分级评估；以及为什么产线运行时不让 agent 改自己的代码
 
-**快脑小模型与可靠性**
+**快脑模型**
 - [Wide & Deep](https://arxiv.org/abs/1606.07792)（Google）· [DCN-v2](https://arxiv.org/abs/2008.13535)（Google）— 快脑排序网络的结构
 - ListNet（Cao et al., ICML 2007）— 列表式 softmax 排序损失
 - [温度缩放](https://arxiv.org/abs/1706.04599)（Guo et al. 2017）— 概率校准
@@ -428,8 +415,5 @@ Industry_RSI/
 - [可复用留出集](https://arxiv.org/abs/1506.02629)（Dwork et al. 2015）— 三套门的面板 / 留出集轮换
 - [Why do tree-based models still outperform deep learning on tabular data?](https://arxiv.org/abs/2207.08815) — 选模型时的对照依据
 
-**课程与信息价值**
-- [相关知识梯度](https://people.orie.cornell.edu/pfrazier/pub/CorrelatedKG.pdf)（Frazier, Powell & Dayanik）· [EPIG](https://arxiv.org/abs/2304.08151) · [贝叶斯实验设计综述](https://arxiv.org/abs/2302.14545) — 课程 agent 按信息价值出题
-
 **工程**
-- [AG-UI](https://github.com/ag-ui-protocol/ag-ui) · [DBOS](https://github.com/dbos-inc/dbos-transact-py) · [Pydantic AI](https://github.com/pydantic/pydantic-ai) · [FastAPI](https://github.com/fastapi/fastapi) · [MCP](https://github.com/modelcontextprotocol) · [SQLModel](https://github.com/fastapi/sqlmodel)
+- [AG-UI](https://github.com/ag-ui-protocol/ag-ui) · [DBOS](https://github.com/dbos-inc/dbos-transact-py) · [Pydantic AI](https://github.com/pydantic/pydantic-ai) · [FastAPI](https://github.com/fastapi/fastapi) · [SQLModel](https://github.com/fastapi/sqlmodel)
