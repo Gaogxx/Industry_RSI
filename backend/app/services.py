@@ -1,4 +1,4 @@
-"""业务服务层：案例生命周期、根因分析调度、CAPA、关案学习、审计。REST / OpenAI 兼容 / MCP 三个入口共用。"""
+"""业务服务层：案例生命周期、根因分析调度、CAPA、关案学习、审计。REST 与 AG-UI 对话共用。"""
 
 from __future__ import annotations
 

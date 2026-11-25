@@ -3,7 +3,6 @@
 import hmac
 
 from fastapi import HTTPException, Request
-from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .config import get_settings
 
@@ -33,19 +32,3 @@ def actor_of(request: Request, default: str = "api") -> str:
     name = request.headers.get("x-kaizen-user")
     return f"user:{name}" if name else default
 
-
-class BearerASGI:
-    """包裹 MCP 的 ASGI 应用（流式响应友好）。"""
-
-    def __init__(self, app: ASGIApp):
-        self.app = app
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] == "http":
-            headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
-            if not _token_ok(headers.get("authorization")):
-                await send({"type": "http.response.start", "status": 401,
-                            "headers": [(b"content-type", b"application/json"), (b"www-authenticate", b"Bearer")]})
-                await send({"type": "http.response.body", "body": b'{"detail":"unauthorized"}'})
-                return
-        await self.app(scope, receive, send)

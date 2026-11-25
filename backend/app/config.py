@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_prefix="KAIZEN_", extra="ignore")
 
     # ── 服务 ─────────────────────────────────────────────
-    # 访问 /agui、/mcp 与写接口时需要的 Bearer Token；留空表示本地开发不鉴权
+    # 访问 /agui 与写接口时需要的 Bearer Token；留空表示本地开发不鉴权
     api_key: str = ""
     # 看板只读接口是否允许匿名访问（内网部署可开，公网建议关闭）
     dashboard_public: bool = True
@@ -18,8 +18,6 @@ class Settings(BaseSettings):
     dbos_database_url: str = "sqlite:///./data/kaizen-dbos.sqlite"
     seed_demo: bool = True
     seed_background: bool = True  # 演示数据在后台生成，服务器立即可用（测试里关闭，等数据生成完再开始）
-    # 可选：/mcp 工具服务器（Claude / VS Code / Cursor 等 MCP 客户端调用案例库与分析工作流）
-    enable_mcp: bool = True
 
     # ── 大模型（任意 OpenAI 兼容接口：DeepSeek / 通义千问 DashScope / vLLM / Ollama）──
     # DeepSeek：deepseek-v4-pro（推理质量优先）或 deepseek-flash（成本优先，始终指向最新 Flash）

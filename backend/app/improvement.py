@@ -1,4 +1,4 @@
-"""持续改进周期（PDCA 的 Check + Act），由 DBOS 夜间定时、看板按钮、kaizen-coach 或 MCP 触发。
+"""持续改进周期（PDCA 的 Check + Act），由 DBOS 夜间定时、看板按钮或 kaizen-coach 触发。
 
 一次周期：KPI 体检 → 帕累托（6M / 根因 / 机台）→ 学习曲线回放（持续学习 vs 冻结先验）→ 关键发现。
 """

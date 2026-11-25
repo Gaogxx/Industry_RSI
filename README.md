@@ -11,7 +11,7 @@
 [![Pydantic AI](https://img.shields.io/badge/Pydantic%20AI-2.71-E92063)](https://ai.pydantic.dev/)
 [![SQLite](https://img.shields.io/badge/SQLite-WAL-003B57?logo=sqlite)](https://sqlite.org/)
 [![DeepSeek](https://img.shields.io/badge/LLM-DeepSeek%20V4%20%7C%20Qwen4-4D6BFE)](https://api-docs.deepseek.com/)
-[![Tests](https://img.shields.io/badge/tests-73%20passed-success)](backend/tests)
+[![Tests](https://img.shields.io/badge/tests-70%20passed-success)](backend/tests)
 
 </div>
 
@@ -20,13 +20,6 @@
 ## 📖 项目简介
 
 本项目是一个面向**工业质量场景**的根因分析 + 自我进化 AI Agent 系统，项目内的智能体叫 **Kaizen**（改善）。它参考英伟达供应链和国内晶圆 / 封测大厂的产线，把每一次质量异常变成一个会自我改进的闭环：现场工程师在对话里描述问题或输入案例号，Kaizen 调取 MES / YMS / FDC 数据做统计分析，给出贝叶斯根因排序、5-Why、CAPA 和 8D 报告；工程师确认根因后，系统立刻告诉你它学到了什么。
-
-**RSI 学习和持续学习是同一件事**：都把“验证过的结论”写进同一套记忆，区别只在标签从哪里来。
-
-| 来源 | 结论怎么来 | 权重 | 什么时候发生 |
-|---|---|---|---|
-| 持续学习（产线） | 工程师确认根因、CAPA 验证有效 / 无效 | 1.0 | 随时 |
-| RSI 学习（数字孪生） | 课程 agent 出题 → 执行 agent 作答 → 孪生干预反馈 → 验证 agent 判定 | 0.5 | 按需 / 每晚 |
 
 ### 核心架构理念
 
@@ -89,7 +82,6 @@ flowchart TB
     subgraph API["⚙️ FastAPI 单进程"]
         AGUI["/agui · AG-UI 1.0<br/>REASONING · TEXT · ACTIVITY · STATE<br/>RUN_FINISHED(interrupt) + resume"]
         REST["/api · REST"]
-        MCP["/mcp · 可选<br/>Claude / VS Code / Cursor"]
     end
 
     subgraph CORE["🧠 智能体与内核"]
@@ -196,8 +188,6 @@ flowchart LR
 
 ## 📊 效果报告
 
-> 全部基于模拟数据：机台、产品、数值均为虚构，不代表任何真实企业。
-
 **新产线冷启动消融**（从教科书知识出发；留出测试集 480 题，按根因分布分层抽样；10 个随机种子；v0.7 的验收门）：
 
 | 模式 | 首位命中率（均值） | 最差种子 |
@@ -259,7 +249,6 @@ v2 拿到了约 96% 的可提升空间，最差的一个种子（70.21）也好�
 | 大模型调用 | Pydantic AI + pydantic-ai-harness | 2.71.0 / 0.71.0 | 类型化输出与校验重试；代码模式调查员（Monty 沙箱） |
 | 大模型 | DeepSeek V4 / 通义 Qwen4 / vLLM 私有化 | OpenAI 兼容 | 5W2H、5-Why、措施细化、评审、追问；可降级 |
 | 数据 | SQLModel + SQLite（WAL）/ PostgreSQL | 0.0.50 | 案例、分析、CAPA、记忆、证据权重版本、RSI 会话、审计 |
-| 工具协议（可选） | MCP Python SDK + MCP Apps | 2.3.0 | 供 Claude / VS Code / Cursor 等客户端调用 |
 | 前端 | 原生 JS + CSS（零构建） | — | 左侧栏 + 主区域布局、SVG 图表、晶圆图、鱼骨图 |
 | 部署 | Docker Compose + Nginx | — | 单机部署；可选 PostgreSQL |
 
@@ -313,7 +302,7 @@ docker compose up -d --build                         # Kaizen + Nginx，http://<
 cd backend && .venv/bin/python -m pytest -q
 ```
 
-73 个测试（离线；包含整套演示数据生成，本机空闲时约 2–3 分钟，机器满负载时约 5 分钟）：统计内核、贝叶斯学习、DBOS 端到端、RSI v2（孪生 / 三角色 / 证据权重 / 验收门 / 知识梯度 / 消融 / 在线会话 / TTSE 双轨的追责与测试时检索）、快脑模型（贝叶斯等价初始化 / 原始信号定位机台且不用批次字段 / 旧维度模型退回贝叶斯 / 交叉层秩默认 4、显著更好才改 / 反向传播数值校验 / 训练窗口的健康门与晋升门 / RSI-Opt 外层存档 / 训练知识库的事实推翻与做法停用）、Harness（路由规则 / 探测裁决 / 近邻训练追回产线变更 / 改进库的门控与停用 / 条件规则白名单与防泄漏审查 / RRSI 事件触发与退避 / 观察期统计回滚）、AG-UI、MCP、脚本化 LLM、鉴权。
+70 个测试（离线；包含整套演示数据生成，本机空闲时约 2–3 分钟，机器满负载时约 5 分钟）：统计内核、贝叶斯学习、DBOS 端到端、RSI v2（孪生 / 三角色 / 证据权重 / 验收门 / 知识梯度 / 消融 / 在线会话 / TTSE 双轨的追责与测试时检索）、快脑模型（贝叶斯等价初始化 / 原始信号定位机台且不用批次字段 / 旧维度模型退回贝叶斯 / 交叉层秩默认 4、显著更好才改 / 反向传播数值校验 / 训练窗口的健康门与晋升门 / RSI-Opt 外层存档 / 训练知识库的事实推翻与做法停用）、Harness（路由规则 / 探测裁决 / 近邻训练追回产线变更 / 改进库的门控与停用 / 条件规则白名单与防泄漏审查 / RRSI 事件触发与退避 / 观察期统计回滚）、AG-UI、脚本化 LLM、鉴权。
 
 ---
 
@@ -323,7 +312,7 @@ cd backend && .venv/bin/python -m pytest -q
 Industry_RSI/
 ├── backend/
 │   ├── app/
-│   │   ├── main.py                 # 服务入口：/ 控制台 · /agui · /api · /mcp（可选）· /healthz
+│   │   ├── main.py                 # 服务入口：/ 控制台 · /agui · /api · /healthz
 │   │   ├── agui.py                 # AG-UI 1.0 端点：事件映射、关案中断与恢复、自我进化直播
 │   │   ├── chat.py                 # 对话技能：分析 / 建案 / 追问 / 确认根因 / 改进教练
 │   │   ├── api.py                  # REST：案例、CAPA、学习曲线、证据权重、RSI 会话、快脑训练、harness、审计
@@ -338,11 +327,10 @@ Industry_RSI/
 │   │   ├── durable.py              # DBOS 持久化工作流初始化
 │   │   ├── ledger.py · stats.py    # Beta 账本（经验条目共用）、配对 bootstrap 与 Wilson 区间
 │   │   ├── improvement.py          # KPI、帕累托、改进周期
-│   │   ├── mcp_server.py           # 可选 MCP 工具与 MCP Apps 看板
 │   │   ├── auth.py · config.py     # Bearer Token 鉴权（读写分离）、运行配置（只读环境变量）
 │   │   ├── models.py · db.py       # 数据模型与数据库（结构变化时自动备份旧库）
 │   │   ├── seed.py                 # 演示数据：按时间回放去年至今的案例、CAPA、产线变更、改进周期、RSI 会话、快脑训练、审计
-│   │   └── static/                 # 控制台：index.html · app.js · styles.css（零构建）· mcp_board.html
+│   │   └── static/                 # 控制台：index.html · app.js · styles.css（零构建）
 │   ├── tests/                      # pytest（离线）
 │   ├── Dockerfile
 │   └── pyproject.toml
@@ -369,7 +357,6 @@ Industry_RSI/
 | `/api/learning/*` · `/api/memory` | 学习曲线、根因先验、证据权重版本与验收门、可进化记忆 |
 | `/api/fastbrain` · `POST /api/fastbrain/{train,optimize}` | 快脑训练窗口（健康门 / 晋升门 / 控制器决定）、训练策略存档、训练知识库；手动开窗、手动跑 RSI-Opt |
 | `/api/harness` · `POST /api/harness/{evolve,benchmark}` | 快慢双脑收据统计、慢脑裁决、改进经验库、RRSI 配置存档、孪生对照 |
-| `/mcp` | 可选：MCP Streamable HTTP（`KAIZEN_ENABLE_MCP`） |
 
 ---
 

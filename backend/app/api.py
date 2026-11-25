@@ -86,7 +86,7 @@ def meta():
         "version": __version__,
         "llm": {"offline": s.offline, "model": "offline-rules" if s.offline else s.llm_model},
         "stack": {"ag_ui": _ver("ag-ui-protocol"), "dbos": _ver("dbos"), "pydantic_ai": _ver("pydantic-ai-slim"),
-                  "pydantic_ai_harness": _ver("pydantic-ai-harness"), "mcp": _ver("mcp"), "fastapi": _ver("fastapi")},
+                  "pydantic_ai_harness": _ver("pydantic-ai-harness"), "fastapi": _ver("fastapi")},
         "stages": STAGES,
         "symptoms": {k: {"name": v.name, "stage": v.stage, "metric": v.metric} for k, v in SYMPTOMS.items()},
         "causes": {k: [{"code": c.code, "name": c.name, "step": c.step, "six_m": c.six_m} for c in v] for k, v in CAUSES.items()},

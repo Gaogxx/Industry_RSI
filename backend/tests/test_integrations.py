@@ -1,4 +1,4 @@
-"""集成面：AG-UI 对话技能（分析 / 建案 / 追问 / 教练）、MCP 工具与 MCP Apps、鉴权。"""
+"""集成面：AG-UI 对话技能（分析 / 建案 / 追问 / 教练）、鉴权。"""
 
 import json
 
@@ -56,39 +56,11 @@ def test_open_webui_compat_removed(client):
     assert "openwebui_url" not in client.get("/api/meta").json()
 
 
-async def test_mcp_tools_and_app(client):
-    from app.mcp_server import BOARD_URI, mcp
-
-    tools = {t.name: t for t in await mcp.list_tools()}
-    assert {"search_cases", "get_case", "analyze_case", "confirm_root_cause", "get_learning_status",
-            "show_kaizen_board", "run_improvement_cycle"} <= set(tools)
-    meta = tools["show_kaizen_board"].meta
-    assert meta["ui"]["resourceUri"] == BOARD_URI
-    assert "ui/initialize" in str(await mcp.read_resource(BOARD_URI))
-
-
-def test_mcp_board_and_learning_status_payloads():
-    from app.mcp_server import get_learning_status, show_kaizen_board
-
-    board = show_kaizen_board()
-    assert board["learning"]["curve"] and board["learning"]["summary"]["cases"] >= 120
-    status = get_learning_status()
-    assert status["backtest"] and status["edges"]
-
-
-def test_mcp_http_initialize(client):
-    r = client.post("/mcp", headers={"Accept": "application/json, text/event-stream", "Content-Type": "application/json"},
-                    json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
-                        "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "pytest", "version": "1"}}})
-    assert r.status_code == 200 and "kaizen" in r.text
-
-
 def test_auth(client, settings):
     settings.api_key = "test-key"
     body = {"threadId": "t", "runId": "r", "messages": [], "forwardedProps": {"mode": "rca"}}
     assert client.post("/agui", json=body).status_code == 401
     assert client.post("/api/cases", json={"title": "xx案例"}).status_code == 401
-    assert client.post("/mcp", json={}).status_code == 401
     assert client.get("/api/kpis").status_code == 200
     settings.dashboard_public = False
     assert client.get("/api/learning/curve").status_code == 401
