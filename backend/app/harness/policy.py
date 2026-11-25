@@ -1,23 +1,57 @@
-"""harness 策略：快慢路由与测试时训练的旋钮。线上用存档里 status=active 的最新一版；没有时用默认值。"""
+"""harness 的组件配置：快慢路由、慢脑各组件的开关与旋钮、裁决方式、大模型调查员，以及条件规则。
+
+线上用存档里 status=active 的最新一版；没有时用默认值。RRSI 进化的就是这份配置（见 evolve.py）。
+
+条件规则（来自改进经验库的提议，见 evolve.rule_proposals）：
+  {"if": {"symptom": "WM_EDGE", "evidence": "weak"}, "set": {"slow.ttt": 0}, "why": "...", "source": "..."}
+  if 只能用可观察的条件字段（症状、证据强弱、富集类型、PM 后突变），set 只能改白名单里的开关——防止规则夹带
+  真值、种子、案例编号这类泄露信息（防泄漏审查见 evolve.critic）。
+"""
 
 from __future__ import annotations
 
 from sqlmodel import Session, col, select
 
+from ..fab.flow import SYMPTOMS
 from ..models import HarnessPolicy
 
-# 组件 → (默认值, 步长, 下限, 上限, 说明)。只有这些键可以被进化（白名单，防止候选夹带别的东西）
+# 组件 → (默认值, 步长, 下限, 上限, 说明)。只有这些键可以被进化（白名单）
 COMPONENTS: dict[str, tuple] = {
-    "fast_min_reliability": (0.85, 0.03, 0.70, 0.97, "可靠度达到多少才允许快脑直接给结论"),
-    "audit_every": (5, 1, 2, 10, "同一症状连续多少次快脑之后，强制慢脑抽查一次"),
-    "ttt_tasks": (36, 12, 12, 96, "慢脑近邻练习的题量（其中三分之一留作探测）"),
-    "ttt_keep": (0.1, 0.1, 0.0, 0.5, "近邻练习前，临时记忆里该症状旧份额的保留比例（测试时适应）"),
-    "ttt_prior_weight": (1.0, 0.25, 0.25, 1.0, "近邻练习对临时先验的权重"),
-    "adopt_min_gain": (0.1, 0.05, 0.0, 0.3, "近邻题命中率至少提高多少才采纳练习后的结论（默认至少多答对 2 道探测题）"),
-    "use_experience": (1, 1, 0, 1, "是否按经验库调整（跳过无效练习、提前转慢脑）"),
+    "router.fast_min_conf": (0.85, 0.03, 0.70, 0.97, "快脑模型的校准概率达到多少才允许直接给结论"),
+    "router.audit_every": (5, 1, 2, 10, "同一症状连续多少次快脑之后，强制慢脑抽查一次"),
+    "slow.ttt": (1, 1, 0, 1, "慢脑：近邻训练（临时记忆在近邻题上学，快脑模型读临时记忆重排）"),
+    "slow.ttt_tasks": (36, 12, 12, 72, "近邻题量（其中三分之一留作探测题）"),
+    "slow.ttt_keep": (0.1, 0.1, 0.0, 0.5, "近邻练习前，临时记忆里该症状旧份额的保留比例"),
+    "arbiter.min_gain": (0.1, 0.05, 0.0, 0.3, "挑战者在探测题上至少比快脑多答对多少比例才改判"),
+    "experience.use": (1, 1, 0, 1, "是否按改进经验库调整（跳过反复无效的组件、同条件快脑答错过就转慢脑）"),
+    "investigator.mode": (1, 1, 0, 2, "大模型调查员（配了 Key 才生效）：0 不调用；1 慢脑都调用；2 只在 S1 或探测打平时调用"),
 }
-DEFAULT = {k: v[0] for k, v in COMPONENTS.items()}
-CONFORMAL_ALPHA = 0.10  # 保形预测：给出覆盖真因 90% 的根因集合（不参与进化，属于可靠性规格）
+DEFAULT: dict = {k: v[0] for k, v in COMPONENTS.items()} | {"rules": []}
+RULE_IF = {"symptom": set(SYMPTOMS), "evidence": {"strong", "weak"}, "factor": {"tool", "batch", "none"}, "after_pm": {True, False}}
+RULE_SET = {"slow.ttt": {0, 1}, "router.force_slow": {1}}
+MAX_RULES = 6
+
+
+def valid_rule(rule: dict) -> str:
+    """规则的格式审查：返回空串表示合格，否则返回原因。"""
+    cond, sets = rule.get("if") or {}, rule.get("set") or {}
+    if not cond or not sets:
+        return "条件或动作为空"
+    for k, v in cond.items():
+        if k not in RULE_IF:
+            return f"条件字段「{k}」不可观察或不在白名单"
+        if v not in RULE_IF[k]:
+            return f"条件值 {k}={v} 不合法"
+    for k, v in sets.items():
+        if k not in RULE_SET or v not in RULE_SET[k]:
+            return f"动作「{k}={v}」不在白名单"
+    return ""
+
+
+def rule_id(rule: dict) -> str:
+    c = ",".join(f"{k}={rule['if'][k]}" for k in sorted(rule["if"]))
+    s = ",".join(f"{k}={rule['set'][k]}" for k in sorted(rule["set"]))
+    return f"{c}→{s}"
 
 
 def clamp(params: dict) -> dict:
@@ -27,14 +61,35 @@ def clamp(params: dict) -> dict:
             _, step, lo, hi, _ = COMPONENTS[k]
             v = min(max(v, lo), hi)
             out[k] = int(round(v)) if isinstance(step, int) else round(float(v), 3)
+    rules, seen = [], set()
+    for r in (params or {}).get("rules", []) or []:
+        if not valid_rule(r) and rule_id(r) not in seen:
+            seen.add(rule_id(r))
+            rules.append({"if": dict(r["if"]), "set": dict(r["set"]), "why": r.get("why", ""), "source": r.get("source", "")})
+    out["rules"] = rules[:MAX_RULES]
     return out
+
+
+def matches(rule: dict, symptom: str, cond: dict) -> bool:
+    ctx = {"symptom": symptom, **cond}
+    return all(ctx.get(k) == v for k, v in rule["if"].items())
+
+
+def effective(params: dict, symptom: str, cond: dict) -> tuple[dict, list[str]]:
+    """把匹配的条件规则叠加到全局配置上（后出现的规则优先）。"""
+    out, hit = dict(params), []
+    for r in params.get("rules", []):
+        if matches(r, symptom, cond):
+            out.update(r["set"])
+            hit.append(rule_id(r))
+    return out, hit
 
 
 def active(db: Session) -> tuple[int, dict]:
     row = db.exec(select(HarnessPolicy).where(HarnessPolicy.status == "active").order_by(col(HarnessPolicy.id).desc())).first()
-    return (row.id, clamp(row.params)) if row else (0, dict(DEFAULT))
+    return (row.id, clamp(row.params)) if row else (0, clamp({}))
 
 
 def complexity(params: dict) -> float:
-    """策略的运行成本（越低越好）：慢脑练习题量为主。用于 RRSI 的“噪声内改进只在降低复杂度时接受”。"""
-    return params["ttt_tasks"] / COMPONENTS["ttt_tasks"][3] + 0.1 * (1 - params["fast_min_reliability"])
+    """配置的复杂度：启用的慢脑组件 + 规则条数（RRSI 的正则项之一；实测成本另算）。"""
+    return params["slow.ttt"] + 0.5 * len(params.get("rules", []))

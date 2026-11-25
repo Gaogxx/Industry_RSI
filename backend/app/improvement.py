@@ -123,7 +123,7 @@ def learning_snapshot(db: Session, now=None) -> dict:
         "events_30d": len(db.exec(select(LearningEvent).where(LearningEvent.created_at >= since)).all()),
         "events_total": len(db.exec(select(LearningEvent)).all()),
         "edges_learned_new": sum(1 for e in edges if e["learned"]),
-        "memory_active": len(db.exec(select(MemoryItem).where(MemoryItem.status == "active")).all()),
+        "memory_active": len(db.exec(select(MemoryItem).where(col(MemoryItem.status).in_(["active", "stable"]))).all()),
         "memory_retired": len(db.exec(select(MemoryItem).where(MemoryItem.status == "retired")).all()),
         "memory_sandbox": len(db.exec(select(MemoryItem).where(MemoryItem.source != "real")).all()),
     }

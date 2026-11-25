@@ -328,22 +328,45 @@ def harness_overview(db: Session = Depends(get_session)):
 
 @router.post("/harness/evolve", dependencies=W)
 async def harness_evolve(request: Request, db: Session = Depends(get_session)):
-    from .harness.evolve import evolve_run
+    """手动触发一次 RRSI（平时由触发条件决定何时跑）。"""
+    from .harness.evolve import evolve_run, pending_triggers
     from .rsi.memory import load_memory
 
-    res = await evolve_run(db, load_memory(db))
+    res = await evolve_run(db, load_memory(db), trigger="manual:" + ",".join(pending_triggers(db)))
     audit(db, actor_of(request), "harness.evolve.manual", res["run_id"], promoted=res["promoted"])
     db.commit()
     return res
 
 
-@router.post("/harness/train", dependencies=W)
-async def harness_train(request: Request, db: Session = Depends(get_session)):
-    from .harness.train import pending_triggers, train_window
+@router.get("/fastbrain", dependencies=R)
+def fastbrain_overview(db: Session = Depends(get_session)):
+    from .harness.service import fastbrain_overview as view
+
+    return view(db)
+
+
+@router.post("/fastbrain/train", dependencies=W)
+async def fastbrain_train(request: Request, db: Session = Depends(get_session)):
+    """手动开一个快脑训练窗口（平时由 A-RSI 触发条件决定）。"""
+    from .fastbrain.windows import pending_triggers, train_window
     from .rsi.memory import load_memory
 
     row = await train_window(db, load_memory(db), "manual:" + ",".join(pending_triggers(db)))
-    return row.model_dump()
+    audit(db, actor_of(request), "fastbrain.train.manual", f"window-{row.id}", status=row.status)
+    db.commit()
+    return {k: v for k, v in row.model_dump().items() if k != "params"} | {"arch": {k: v for k, v in row.params.items() if k != "theta"}}
+
+
+@router.post("/fastbrain/optimize", dependencies=W)
+async def fastbrain_optimize(request: Request, db: Session = Depends(get_session)):
+    """手动跑一次 RSI-Opt 外层（训练策略进化）。"""
+    from .fastbrain.optimize import evolve_training, pending_triggers
+    from .rsi.memory import load_memory
+
+    res = await evolve_training(db, load_memory(db), trigger="manual:" + ",".join(pending_triggers(db)))
+    audit(db, actor_of(request), "fastbrain.optimize.manual", res["run_id"], promoted=res["promoted"])
+    db.commit()
+    return res
 
 
 @router.post("/harness/benchmark", dependencies=W)

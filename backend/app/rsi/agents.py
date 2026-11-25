@@ -4,6 +4,10 @@
   执行 agent（Executor）    独占“写记忆”：用当前记忆做根因分析并提出整改；只在验证判定后合并经验
   验证 agent（Verifier）    独占“判真假”：只看环境反馈（整改前后指标）与验收要求，看不到执行 agent 的推理与记忆
 
+三者都按 TTSE 使用经验（不改参数、在测试时靠经验进化）：执行 agent 作答时检索“稳定”的做法条目（tip），
+课程 agent 读自己“失败后加练是否有用”的做法条目，验证 agent 是唯一的裁判——条目的成败只由它的判定决定，
+失败追责到当时实际用到的条目（见 rsi/memory.py）。
+
 三者都有确定性内核（离线可用）。配置大模型后，课程 agent 可由与执行不同的模型担任（论文：GLM-5.3 执行，
 Kimi-K3 负责课程与验证），以降低相关性错误；验证 agent 刻意保持为基于环境反馈的确定性判定——
 论文指出“验证不完整”是递归自我改进的第一大失败来源，而本系统的环境反馈是数值化的，规则判定比 LLM 更可靠。
@@ -29,7 +33,7 @@ class CurriculumPick(BaseModel):
     symptom: str
     difficulty: Literal["easy", "medium", "hard"] = "medium"
     decoy_pm: bool = False
-    variant: Literal["前置技能", "信息量变体", "失败驱动", "压力测试", "证据校准", "变更校准", "近邻练习"] = "信息量变体"
+    variant: Literal["前置技能", "信息量变体", "失败驱动", "压力测试", "证据校准", "变更校准", "近邻练习", "训练池"] = "信息量变体"
     rationale: str = ""
 
 
@@ -127,7 +131,11 @@ class Curriculum:
             self.stop_reason = f"连续 {self.patience} 道题没有带来实质新知识，课程 agent 判断探索结束"
             return None  # 论文的停止条件
         last = history[-1] if history else None
-        if last and last["verdict"] != "PASS":
+        drill = last and last["verdict"] != "PASS"
+        if drill:
+            tip = mem.items.get(f"tip:curriculum:drill:{last['spec']['symptom']}")
+            drill = tip is None or tip["status"] != "retired"  # TTSE：这条做法在该症状上停用了就不再加练，改按信息价值出题
+        if drill:
             sym = last["spec"]["symptom"]
             spec = TaskSpec(sym, "hard" if last["spec"]["difficulty"] != "hard" else "medium", False, "失败驱动",
                             f"上一题「{SYMPTOMS[sym].name}」未通过验证，针对同一症状加练")
@@ -174,6 +182,24 @@ class Curriculum:
                                 f"（{'共性分析显著' if cond['evidence'] == 'strong' else '证据模糊'}{'，PM 后突变' if cond['after_pm'] else ''}）"))
         return out
 
+    def training_pool(self, per_symptom: int, mix: dict, rng, focus: set[str] | None = None,
+                      symptoms: list[str] | None = None) -> list[TaskSpec]:
+        """快脑小模型的训练池（参照 A-RSI：按题族固定配额出题，标签由孪生程序给出）。
+
+        每个症状固定 per_symptom 道题；难度与干扰比例来自训练策略（mix: hard_share / decoy_share）；
+        focus = 训练手册里“产线变更后分布变了”的症状，配额加倍。与常规课程不同，这里不按信息价值挑症状——
+        固定配额保证每个窗口的样本池可比，换池与否由“仍有信息量的样本占比”决定。
+        """
+        hard, decoy = float(mix.get("hard_share", 0.5)), float(mix.get("decoy_share", 0.33))
+        out = []
+        for sym in symptoms or list(SITE_TRUTH):
+            n = per_symptom * (2 if focus and sym in focus else 1)
+            for i in range(n):
+                diff = "hard" if rng.random() < hard else rng.choice(["easy", "medium", "medium"])
+                out.append(TaskSpec(sym, diff, rng.random() < decoy, "训练池",
+                                    f"快脑训练池：{SYMPTOMS[sym].name}" + ("（产线变更后加倍配额）" if focus and sym in focus else "")))
+        return out
+
     async def _llm_refine(self, specs: list[TaskSpec], gaps: list[dict], phase: str, n: int) -> list[TaskSpec] | None:
         if not (self.llm and self.llm.available):
             return None
@@ -188,17 +214,40 @@ class Curriculum:
 
 # ── 执行 agent ───────────────────────────────────────────
 class Executor:
+    TIP_P, TIP_RATIO = 0.8, 0.5
+
+    def pick(self, hyps: list, mem: MemoryState, sym: str, ev: dict, exclude: set[str]) -> tuple:
+        """TTSE 的测试时检索：排在前三、后验不低于首位一半的候选里，若有“同条件下稳定有效”的做法条目（P ≥ 0.8），
+        且比首位自己的做法条目更可靠，就先试它；否则按排序。返回（候选, 用到的条目）。"""
+        from .memory import condition_of, item_p
+
+        cands = [h for h in hyps if h.cause_code not in exclude] or hyps
+        ev_cond = condition_of(ev)["evidence"]
+        tip_of = lambda h: mem.items.get(f"proc:{sym}:{h.cause_code}:{ev_cond}")  # noqa: E731
+        top = cands[0]
+        base = tip_of(top)
+        base_p = item_p(base) if base and base["status"] == "stable" else 0.0
+        best = None
+        for h in cands[1:3]:
+            it = tip_of(h)
+            if it and it["status"] == "stable" and item_p(it) >= self.TIP_P and item_p(it) > base_p \
+                    and h.posterior >= self.TIP_RATIO * top.posterior and (best is None or item_p(it) > item_p(best[1])):
+                best = (h, it)
+        if best:
+            return best[0], {"key": best[1]["key"], "text": best[1]["text"], "p": round(item_p(best[1]), 3)}
+        return top, None
+
     def attempt(self, task: Task, mem: MemoryState, exclude: set[str], evidence: dict | None = None) -> dict:
         ev = evidence or analyze_dataset(task.observation)
         sym = observed_symptom(task.spec.symptom, ev)
         hyps = rank(ev, sym, mem.edges, mem.hotspot_weights(), mem.weights)
-        pick = next((h for h in hyps if h.cause_code not in exclude), hyps[0])
+        pick, tip = self.pick(hyps, mem, sym, ev, exclude)
         found = cause_by_code(pick.cause_code)
         tpl = found[1].capa if found else ("隔离可疑批次", "针对根因整改", "纳入 FMEA")
         capa = [{"kind": k, "title": t} for k, t in zip(("containment", "corrective", "preventive"), tpl)]
         return {"symptom": sym, "evidence": ev, "cause_code": pick.cause_code, "cause": pick.name,
                 "posterior": round(pick.posterior, 3), "ranking": [(h.cause_code, round(h.posterior, 3)) for h in hyps[:4]],
-                "capa": capa, "memory_used": [i["key"] for i in mem.active_items(sym)[:3]]}
+                "capa": capa, "memory_used": [i["key"] for i in mem.active_items(sym)[:3]], "tip": tip}
 
 
 # ── 验证 agent ───────────────────────────────────────────

@@ -222,7 +222,9 @@ async def rca(messages: list[dict], text: str, actor: str) -> AsyncIterator[tupl
         yield "activity", {"type": "kaizen.case", "route": f"/cases/{case_id}", "open": True, "title": f"{code} 根因分析",
                            "top": top, "changed": bool(done.get("learning_changed_top")),
                            "harness": {"route": hz["route"], "reliability": hz["reliability"], "set_n": len(hz["set"]),
-                                       "ttt": (hz.get("inner") or {}).get("ttt")} if hz else None}
+                                       "fast_kind": hz.get("fast_kind"), "hits": (hz.get("inner") or {}).get("hits"),
+                                       "probe_n": (hz.get("inner") or {}).get("probe_n"),
+                                       "chosen": ((hz.get("inner") or {}).get("arbiter") or {}).get("chosen")} if hz else None}
 
 
 async def coach(messages: list[dict], text: str, actor: str) -> AsyncIterator[tuple[str, str]]:

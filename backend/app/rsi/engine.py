@@ -20,7 +20,7 @@ from concurrent.futures.process import BrokenProcessPool
 from ..fab.analytics import analyze_dataset
 from ..fab.kg import rank, share
 from .agents import Curriculum, Executor, Verifier
-from .memory import MemoryState, consolidate_fail, consolidate_pass
+from .memory import MemoryState, consolidate_fail, consolidate_pass, record_curriculum_tip
 from .twin import FabTwin, TaskSpec, eval_set
 
 MAX_ATTEMPTS = 3
@@ -74,7 +74,7 @@ def practice(twin: FabTwin, mem: MemoryState, spec: TaskSpec, seed: int, executo
         fb = twin.apply_fix(task, a["cause_code"])
         v = verifier.judge(task.requirements, fb, {x["kind"] for x in a["capa"]})
         attempts.append({"cause_code": a["cause_code"], "cause": a["cause"], "posterior": a["posterior"], "ranking": a["ranking"],
-                         "memory_used": a["memory_used"], "feedback": fb, "verdict": v})
+                         "memory_used": a["memory_used"], "tip": a.get("tip"), "feedback": fb, "verdict": v})
         if v["passed"]:
             break
         exclude.add(a["cause_code"])
@@ -135,7 +135,7 @@ def consolidate(mem: MemoryState, result: dict, ref: int | None = None, source: 
     events = []
     for a in result["attempts"]:
         if not a["verdict"]["passed"]:
-            events += consolidate_fail(mem, sym, a["cause_code"], ev, source=source, ref=ref, weight=weight)
+            events += consolidate_fail(mem, sym, a["cause_code"], ev, source=source, ref=ref, weight=weight, used_tip=a.get("tip"))
     if result["verdict"] == "PASS":
         last = result["attempts"][-1]
         tried = [a["cause_code"] for a in result["attempts"]]
@@ -191,6 +191,8 @@ async def run_session(mem: MemoryState, *, mode: str = "v2", breadth: int = BREA
     async def record(result: dict, phase: str, step: int) -> dict:
         events, delta, new_items = consolidate(mem, result, weight=sandbox_weight,
                                                examples_only=phase == "CAL" and not cal_updates_prior and not changed(result))
+        if result["spec"].get("variant") == "失败驱动":  # TTSE：课程 agent 的加练做法记成败（验证 agent 判定）
+            record_curriculum_tip(mem, result["spec"]["symptom"], result["verdict"] == "PASS")
         rec = {**result, "phase": phase, "step": step, "delta": delta, "new_items": new_items, "events": events}
         history.append(rec)
         if commit:

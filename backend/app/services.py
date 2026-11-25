@@ -150,7 +150,7 @@ async def close_case(case_id: int, *, cause_code: str, root_cause: str | None = 
         rank_before = ranked.index(cause_code) + 1 if cause_code in ranked else None
         from .harness.experience import reflect_verified
 
-        harness = reflect_verified(db, case)  # 外层递归：收据写入现场结果，经验库按成败更新（答错则追责）
+        harness = reflect_verified(db, case)  # 外层反思：收据写入现场结果，改进经验库按成败更新（答错则追责）
         db.commit()
         events = learn_from_closure(db, case, cause_code, ranked)
         from .rsi.memory import load_memory, refit_and_store

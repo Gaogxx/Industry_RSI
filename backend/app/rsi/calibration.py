@@ -150,21 +150,26 @@ def fit(examples: list[tuple[list[tuple[str, list[float]]], str]], lam: float = 
             "avg_loglik": round(ll / max(1, len(data)), 4)}
 
 
-def gate_check(mem, weights: dict | None) -> dict:
-    """在验收门面板上评估一组证据权重：首位命中率与平均对数损失（越低越好）。"""
+def gate_check(mem, weights: dict | None, round_: int | None = None) -> dict:
+    """在验收门面板上评估一组证据权重：首位命中率、平均对数损失（越低越好），以及逐题结果与分症状对数损失（配对比较用）。"""
     from .twin import gate_panel
 
     hw = mem.hotspot_weights()
-    hits, loss, panel = 0, 0.0, gate_panel(getattr(mem, "era", None))
+    panel = gate_panel(getattr(mem, "era", None), getattr(mem, "gate_round", 0) if round_ is None else round_)
+    hits, lls = [], []
     if not weights:  # 专家设定（无权重）时 rank() 用因子乘积，逐题计算以保证一致
         for e in panel:
             hyps = rank(e["evidence"], e["symptom"], mem.edges, hw, weights)
-            hits += bool(hyps and hyps[0].cause_code == e["truth"])
-            loss -= math.log(max(next((h.posterior for h in hyps if h.cause_code == e["truth"]), 0.0), 1e-6))
-        return {"hit1": round(100 * hits / len(panel), 2), "logloss": round(loss / len(panel), 4)}
-    rows = feature_rows([(e["evidence"], e["symptom"], e["truth"]) for e in panel], mem.edges, hw)
-    for r, truth in rows:
-        hit, post = score(r, weights, truth)
-        hits += hit
-        loss -= math.log(max(post, 1e-6))
-    return {"hit1": round(100 * hits / len(panel), 2), "logloss": round(loss / len(panel), 4)}
+            hits.append(1.0 if hyps and hyps[0].cause_code == e["truth"] else 0.0)
+            lls.append(-math.log(max(next((h.posterior for h in hyps if h.cause_code == e["truth"]), 0.0), 1e-6)))
+    else:
+        rows = feature_rows([(e["evidence"], e["symptom"], e["truth"]) for e in panel], mem.edges, hw)
+        for r, truth in rows:
+            hit, post = score(r, weights, truth)
+            hits.append(1.0 if hit else 0.0)
+            lls.append(-math.log(max(post, 1e-6)))
+    by_sym: dict[str, list[float]] = {}
+    for e, ll in zip(panel, lls):
+        by_sym.setdefault(e["symptom"], []).append(ll)
+    return {"hit1": round(100 * sum(hits) / len(panel), 2), "logloss": round(sum(lls) / len(panel), 4), "n": len(panel),
+            "by_symptom": {k: round(sum(v) / len(v), 4) for k, v in by_sym.items()}, "_hit": hits, "_ll": lls}

@@ -52,8 +52,9 @@ IN_PROGRESS = [(46, "verifying"), (41, "verifying"), (37, "verifying"), (33, "ca
 CYCLE_DAYS = list(range(510, 0, -30))  # 每月一次改进周期
 # RSI 会话：产线变更同步到孪生两天后跑一次，把变化学进来（最后一次变更由今天启动时的在线会话处理）
 RSI_DAYS = [352] + [c.days_ago - 2 for c in CHANGES[:-1]]  # 首次会话 + 每次产线变更两天后
-HARNESS_TRAIN_DAYS = [300, 200, 100, 30]  # 可靠度模型：有触发条件时才开训练窗口
-HARNESS_EVOLVE_DAYS = [150]  # 历史上的一次 RRSI 策略进化（今天启动时还会再跑一次）
+# 夜间检查（训练策略进化 → 快脑训练窗口 → RRSI，各自有触发条件才跑）。线上每晚都检查；
+# 演示历史为了启动快，只回放其中几个夜晚（今天启动时还会再检查一次）
+HARNESS_CHECK_DAYS = [300, 160, 45]
 
 SITES = {"fe": ("Fab A · 12 英寸先进逻辑", "AX-900 加速器 die（5nm 级）"),
          "pkg": ("封测厂 B · 2.5D 先进封装", "AX-900 2.5D 封装（中介层 + 8×HBM3E）"),
@@ -197,23 +198,13 @@ class _Timeline:
         db.add(rc)
         an.counterfactual = {**(an.counterfactual or {}), "harness": out["answer"]}
         db.add(an)
-        _audit(db, "agent", "harness.route", case.code, when, route=rc.route, reliability=rc.reliability)
+        _audit(db, "agent", "harness.route", case.code, when, route=rc.route, reliability=rc.reliability, fast_model=rc.fast_model)
         db.commit()
 
-    async def harness_train(self, when) -> None:
-        from .harness.train import pending_triggers, train_window
-        from .rsi.memory import load_memory
+    async def harness_check(self, when) -> None:
+        from .harness.service import nightly
 
-        trig = pending_triggers(self.db)
-        if trig:
-            await train_window(self.db, load_memory(self.db), ",".join(trig), when, twin=FabTwin(now=when, era=era_at(self.days_ago(when))))
-
-    async def harness_evolve(self, when) -> None:
-        from .harness.evolve import evolve_run
-        from .rsi.memory import load_memory
-
-        await evolve_run(self.db, load_memory(self.db), generations=2, children=2, when=when, seed=int(self.days_ago(when)),
-                         twin=FabTwin(now=when, era=era_at(self.days_ago(when))))
+        await nightly(self.db, when, twin=FabTwin(now=when, era=era_at(self.days_ago(when))))
 
     def close(self, spec: dict) -> None:
         db, rng = self.db, self.rng
@@ -254,7 +245,7 @@ class _Timeline:
         db.flush()
         from .harness.experience import reflect_verified
 
-        reflect_verified(db, case, when)  # 外层递归：收据写入现场结果，经验按成败更新
+        reflect_verified(db, case, when)  # 外层反思：收据写入现场结果，改进经验库按成败更新
         learn_from_closure(db, case, cause, spec["ranked"], when=when)
         _audit(db, rng.choice(APPROVERS), "case.close", case.code, when, cause_code=cause,
                rank_in_analysis=spec["ranked"].index(cause) + 1 if cause in spec["ranked"] else None)
@@ -376,10 +367,9 @@ async def seed(db: Session) -> int:
     events += [(c["closed"], 1, "close", c) for c in tl.cases if c["closed"]]
     events += [(now - timedelta(days=d, hours=-2), 2, "cycle", None) for d in CYCLE_DAYS]
     events += [(now - timedelta(days=d, hours=-3), 3, "rsi", None) for d in RSI_DAYS]
-    events += [(now - timedelta(days=d, hours=-4), 4, "harness_train", None) for d in HARNESS_TRAIN_DAYS]
-    events += [(now - timedelta(days=d, hours=-5), 5, "harness_evolve", None) for d in HARNESS_EVOLVE_DAYS]
+    events += [(now - timedelta(days=d, hours=-4), 4, "harness_check", None) for d in HARNESS_CHECK_DAYS]
     prev_rsi = None
-    cost = {"create": 2, "close": 1, "cycle": 3, "change": 1, "rsi": 30, "harness_train": 6, "harness_evolve": 25}
+    cost = {"create": 2, "close": 1, "cycle": 3, "change": 1, "rsi": 30, "harness_check": 30}
     total, done = sum(cost[e[2]] for e in events), 0
     for when, _, kind, spec in sorted(events, key=lambda e: (e[0], e[1])):
         done += cost[kind]
@@ -389,10 +379,8 @@ async def seed(db: Session) -> int:
             tl.create(spec)
             if spec.get("analysis_id"):
                 await tl.receipt(spec)
-        elif kind == "harness_train":
-            await tl.harness_train(when)
-        elif kind == "harness_evolve":
-            await tl.harness_evolve(when)
+        elif kind == "harness_check":
+            await tl.harness_check(when)
         elif kind == "close":
             tl.close(spec)
         elif kind == "cycle":
@@ -552,9 +540,9 @@ async def prepare_demo(rsi_on_startup: bool = True) -> None:
         with session_scope() as db:
             has_hbench = db.exec(select(HarnessBenchmark)).first() is not None
         if not has_hbench:
-            _progress(0.97, "harness：可靠度训练窗口 → RRSI 策略进化 → 快慢双脑孪生对照")
+            _progress(0.97, "今晚的检查：训练策略进化 → 快脑训练窗口 → RRSI（有触发才跑）→ 孪生对照")
             with session_scope() as db:
-                await nightly(db, force_evolve=True)
+                await nightly(db)
                 await benchmark(db, trigger="seed")
         _progress(1.0, "演示数据已就绪", state="ready")
     except Exception as e:  # noqa: BLE001

@@ -40,19 +40,21 @@ def render_8d(case: dict, state: dict, analysis_id: int | None = None) -> str:
     L += ["", "## D4 根因分析"]
     hz = (state.get("harness") or {}).get("answer")
     if hz:
-        ttt = (hz.get("inner") or {}).get("ttt")
+        inner = hz.get("inner") or {}
         names = {h["cause_code"]: h["name"] for h in hyps}
-        L += ["", "### 可靠度与快慢双脑",
-              f"- 路由：**{'快脑（统计内核 + 记忆，直接给结论）' if hz['route'] == 'fast' else '慢脑（双层递归：证据族对照 + 近邻练习）'}**"
+        who = "快脑模型（训练出来的排序网络）" if hz.get("fast_kind") == "model" else "快脑（贝叶斯：还没有通过晋升门的模型）"
+        L += ["", "### 快慢双脑与可靠度",
+              f"- 路由：**{who + '，直接给结论' if hz['route'] == 'fast' else '慢脑（近邻训练 + 贝叶斯意见，探测题裁决）'}**"
               + (f"；原因：{'、'.join(hz['reasons'])}" if hz.get("reasons") else ""),
               f"- 首位根因是真因的校准概率：**{hz['reliability']:.0%}**；90% 把握的根因集合：" +
               "、".join(f"「{names.get(c, c)}」" for c in hz["set"]),
               f"- 结论状态：{hz['text']}"]
-        if ttt:
-            L.append(f"- 近邻练习（测试时训练）：{ttt['tasks']} 道孪生题，探测命中 {ttt['probe_before']}/{ttt['probe_n']} → "
-                     f"{ttt['probe_after']}/{ttt['probe_n']}，{'采纳练习后的排序' if ttt['adopt'] else '保留线上记忆的排序'}")
+        if inner.get("hits"):
+            label = {"fast": "快脑模型", "ttt": "近邻训练", "bayes": "贝叶斯意见"}
+            L.append(f"- 探测题（{inner['probe_n']} 道近邻孪生题）命中：" +
+                     "、".join(f"{label[k]} {v}" for k, v in inner["hits"].items()) + f"；裁决：{inner['arbiter']['why']}")
         for x in hz.get("experiences") or []:
-            L.append(f"- 用到的经验（{'事实' if x['track'] == 'fact' else '做法'}，成功率 {x['p']:.0%}，{x['n']} 次）：{x['text']}")
+            L.append(f"- 改进经验库（成功率 {x['p']:.0%}，{x['n']} 次）：{x['text']}")
     L += ["", "### 统计证据（MES / YMS / FDC）"]
     s = ev.get("summary") or {}
     if s:

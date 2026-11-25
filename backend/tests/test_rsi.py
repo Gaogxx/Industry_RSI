@@ -60,8 +60,37 @@ def test_memory_keeps_conditions_uncertainty_and_source_weights():
     assert item["condition"] == {"evidence": "weak", "after_pm": False, "factor": "none"} and item["passes"] == 1
     for _ in range(3):
         consolidate_fail(sb, "RACK_LEAK", "FITTING_TORQUE", ev, source="sandbox")
-    assert item["status"] == "retired" and item["fails"] == 3  # 被反复否定的记忆自动停用
-    assert any(i["kind"] == "lesson" for i in sb.items.values())
+    assert item["status"] == "active" and item["fails"] == 3  # TTSE：失败 3 次（P=33%）还不停用
+    consolidate_fail(sb, "RACK_LEAK", "FITTING_TORQUE", ev, source="sandbox", used_tip={"key": item["key"]})
+    assert item["status"] == "retired" and item["fails"] == 4 and item["retired_reason"]  # P<45% 且失败≥4 次：停用但留档
+    assert item["blame"] and "先试" in item["blame"][-1]["why"]  # 追责到当时实际用到的条目
+    lesson = next(i for i in sb.items.values() if i["kind"] == "lesson")
+    assert lesson["track"] == "tip" and lesson["passes"] == 4  # 教训再次出现 = 再次被印证
+    consolidate_pass(sb, "RACK_LEAK", "FITTING_TORQUE", [], ev, source="sandbox")
+    assert lesson["fails"] == 1 and lesson["blame"]  # 同条件下验证有效 → 教训被推翻一次
+
+
+def test_ttse_fact_track_and_executor_tip_retrieval():
+    from app.rsi.agents import Executor
+    from app.fab.kg import rank
+
+    ev = {"suspects": [{"factor": "ETCH", "step": "ETCH", "value": "ETC-02B", "score": 3.0, "p_adj": 0.001}], "change_point": None}
+    mem = MemoryState.textbook()
+    for _ in range(3):
+        consolidate_pass(mem, "WM_EDGE", "ETCH_FOCUS_RING", [], ev, source="sandbox")
+    fact = mem.items["fact:WM_EDGE:ETCH_FOCUS_RING:ETC-02B"]
+    assert fact["track"] == "fact" and fact["status"] == "active"  # 验证 agent 确认满 3 次才生效
+    consolidate_fail(mem, "WM_EDGE", "ETCH_FOCUS_RING", ev, source="sandbox")
+    assert fact["fails"] == 1 and fact["blame"]
+    weak = {"suspects": [], "change_point": None}
+    hyps = rank(weak, "WM_EDGE", mem.edges, mem.hotspot_weights(), mem.weights)
+    second = hyps[1].cause_code
+    for _ in range(6):
+        consolidate_pass(mem, "WM_EDGE", second, [], weak, source="sandbox")
+    hyps = rank(weak, "WM_EDGE", mem.edges, mem.hotspot_weights(), mem.weights)
+    pick, tip = Executor().pick(hyps, mem, "WM_EDGE", weak, set())
+    if hyps[0].cause_code != second and tip:
+        assert pick.cause_code == second and tip["key"].startswith("proc:WM_EDGE:" + second)
 
 
 def test_curriculum_breadth_covers_stages_and_depth_stops():

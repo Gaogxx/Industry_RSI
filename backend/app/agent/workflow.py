@@ -83,7 +83,7 @@ async def s_infer(state: dict) -> dict:
 
 @DBOS.step()
 async def s_harness(state: dict) -> dict:
-    """快慢双脑：快脑可靠就直接给结论；否则慢脑做双层递归的内层（证据族对照 + 近邻练习 / 测试时训练）。"""
+    """快慢双脑：快脑模型把握足够就直接给结论；否则慢脑（近邻训练 + 贝叶斯意见，探测题裁决）。"""
     from ..harness.brain import decide
     from ..rsi.memory import load_memory
 
@@ -97,13 +97,16 @@ async def s_harness(state: dict) -> dict:
         db.commit()
     ans, rc = out["answer"], out["receipt"]
     receipt = {k: v for k, v in rc.model_dump().items() if k not in ("id", "created_at", "verified_at", "analysis_id")}
-    ttt = (ans["inner"] or {}).get("ttt")
+    inner = ans["inner"] or {}
+    who = "快脑模型" if ans["fast_kind"] == "model" else "快脑（贝叶斯）"
     if ans["route"] == "fast":
-        r.emit("harness", "快脑 · 直接给结论", f"可靠度 {ans['reliability']:.0%}，保形集合 {len(ans['set'])} 个根因；不跑孪生、不调大模型")
+        r.emit("harness", f"{who} · 直接给结论", f"校准概率 {ans['reliability']:.0%}，保形集合 {len(ans['set'])} 个根因；不跑孪生、不调大模型")
     else:
-        r.emit("harness", "慢脑 · 双层递归", "转慢脑原因：" + "、".join(ans["reasons"]) +
-               (f"；近邻练习 {ttt['tasks']} 题，探测命中 {ttt['probe_before']}/{ttt['probe_n']} → {ttt['probe_after']}/{ttt['probe_n']}，"
-                + ("采纳练习后的结论" if ttt["adopt"] else "回退到线上记忆") if ttt else ""))
+        hits = inner.get("hits") or {}
+        names = {"fast": "快脑", "ttt": "近邻训练", "bayes": "贝叶斯"}
+        r.emit("harness", "慢脑 · 探测题裁决", "转慢脑原因：" + "、".join(ans["reasons"]) +
+               (f"；探测题命中 " + "、".join(f"{names[k]} {v}/{inner['probe_n']}" for k, v in hits.items()) +
+                f"；{(inner.get('arbiter') or {}).get('why', '')}" if hits else ""))
     return await r.finish({"hypotheses": out["final"], "harness": {"answer": ans, "receipt": receipt}})
 
 
@@ -216,7 +219,7 @@ async def rca_workflow(case_id: int, actor: str = "api") -> dict:
         for step in (s_intake, s_evidence, s_infer, s_harness, s_knowledge):
             merge(await step(state))
         requested = DBOS.workflow_id in _LLM_OVERRIDES  # 调用方明确要求用某个大模型分析（如脚本化模型、人工点名深查）
-        if requested or (state.get("harness") or {}).get("answer", {}).get("route") != "fast":  # 快脑结论不调用大模型调查员
+        if requested or (state.get("harness") or {}).get("answer", {}).get("investigate"):  # 由 harness 配置决定慢脑是否调用大模型调查员
             merge(await s_investigate(state))
         while True:
             for step in (s_explain, s_capa, s_review):
@@ -277,7 +280,7 @@ async def _nightly_step() -> dict:
     with session_scope() as db:  # 夜间：用全部已验证样本（产线 + 孪生）重拟合证据权重
         w = refit_and_store(db, load_memory(db), source="nightly")
         db.commit()
-        hz = await harness_nightly(db)  # harness：观察期检查 → 可靠度训练窗口（有触发才开）→ 每周一次 RRSI 策略进化
+        hz = await harness_nightly(db)  # 观察期 → 训练策略进化 → 快脑训练窗口 → RRSI（各自有触发条件才跑）
     return {"cycle_id": cycle.id, "weights_accepted": w["accepted"], "harness": hz}
 
 

@@ -195,11 +195,12 @@ def observed_symptom(task_symptom: str, evidence: dict) -> str:
 
 
 EVAL_PER_SYMPTOM = 40  # 测试集 480 题：p≈0.6 时标准误约 2.2 个百分点
-GATE_PER_SYMPTOM = 10  # 验收门面板 120 题
+GATE_PER_SYMPTOM = 20  # 验收门面板 240 题（每症状 20 题，分层）
+GATE_ROUNDS, GATE_SPAN = 40, 1_250  # 面板轮换：每采纳一次更新就换下一块面板（96 万 ~ 101 万段，不与其它题集重叠）
 _CACHE: dict[str, list[dict]] = {}
 
 
-def _stratified(per: int, seed0: int, era: int | None = None) -> list[dict]:
+def _stratified(per: int, seed0: int, era: int | None = None) -> list[dict]:  # 种子 = seed0 + 症状序号 × 100 + 题号
     twin, out = FabTwin(datetime(2026, 11, 1, tzinfo=timezone.utc), era=era), []
     for si, (sym, dist) in enumerate(twin.truth.items()):
         quota = {c: max(1, round(per * p)) for c, p in dist.items()}
@@ -226,14 +227,17 @@ def eval_set(era: int | None = None) -> list[dict]:
     return _CACHE[key]
 
 
-def gate_panel(era: int | None = None) -> list[dict]:
+def gate_panel(era: int | None = None, round_: int = 0) -> list[dict]:
     """验收门面板（封存的验证集，与测试集不重叠）：每次想更新证据权重，都必须在这里“不退步”才会被采纳。
 
     依据：OpsHarness（arXiv 2608.25661）中去掉验收门的自我进化版本比不进化还差；SEAL（2607.24300）同理。
+    轮换（参照 Dwork et al. 2015 的“可复用留出集”问题）：同一块面板反复用来做决定，权重会慢慢被“调”向面板本身；
+    孪生可以无限出题，所以每采纳一次更新就换下一块全新的面板（round_ = 已采纳的更新次数）。
     """
-    key = f"gate:{CURRENT_ERA if era is None else era}"
+    r = round_ % GATE_ROUNDS
+    key = f"gate:{CURRENT_ERA if era is None else era}:{r}"
     if key not in _CACHE:
-        _CACHE[key] = _stratified(GATE_PER_SYMPTOM, 960_000, era)
+        _CACHE[key] = _stratified(GATE_PER_SYMPTOM, 960_000 + r * GATE_SPAN, era)
     return _CACHE[key]
 
 
