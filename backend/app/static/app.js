@@ -600,7 +600,7 @@
         [a ? m.candidate.ece + " / " + m.bayes.ece : "-", "校准误差 ECE：模型 / 贝叶斯（越小越可信）"],
         [a && a.conformal ? pct(a.conformal.coverage_holdout) : "-", "保形集合在留出集上的覆盖（目标 90%）"]];
       view.innerHTML = head + '<div class="tiles">' + tiles.map(function (t) { return '<div class="tile"><div class="v">' + esc(t[0]) + '</div><div class="l">' + esc(t[1]) + "</div></div>"; }).join("") + "</div>" +
-        '<div class="panel"><div class="flow"><div class="flow-src"><div class="flow-box ok"><b>训练什么</b><span>快脑小模型：分数 = 宽（线性，初始化为贝叶斯证据权重）+ 深（隐层）+ 交叉（DCN-v2）+ 根因偏置</span><span class="muted small">特征 = 贝叶斯 5 个证据因子 + 贝叶斯没用上的结构信号；未训练时 = 贝叶斯</span></div>' +
+        '<div class="panel"><div class="flow"><div class="flow-src"><div class="flow-box ok"><b>训练什么</b><span>快脑小模型：分数 = 宽（线性，初始化为贝叶斯证据权重）+ 深（隐层）+ 交叉（DCN-v2）+ 根因偏置</span><span class="muted small">特征 = 贝叶斯 5 个证据因子 + 结构信号 + 原始信号（连续良率在变点后时间窗里逐机台检验）；未训练时 = 贝叶斯</span></div>' +
         '<div class="flow-box accent"><b>A-RSI 训练窗口（何时更新、最后是否更新）</b><span>有触发才开窗 → 课程 agent 按固定配额出题、孪生给标签 + 产线确认样本 → 从上一版继续训练</span><span>健康门（不过重试一次，再不过就停）→ 晋升门（留出集上不比在用版本和贝叶斯差）</span></div></div>' +
         '<div class="flow-arrow"><b class="arr">↔</b><span class="muted small">RSI-Opt</span></div>' +
         '<div class="flow-box mem"><b>RSI-Opt 内外两层</b><span>内层：每个 epoch 末控制器决定继续 / 减半 / 回滚 / 停止</span><span>外层：跨 run 进化训练策略（学习率、结构、正则、出题配比），select 集验收 + report 集确认</span><span class="muted small">训练知识库：事实（数据与环境）/ 做法（训练技巧），失败追责，停用留档</span></div></div></div>' +

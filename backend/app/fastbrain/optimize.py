@@ -35,7 +35,7 @@ SPACE: dict[str, tuple[list, object, str]] = {
     "lr": ([0.005, 0.01, 0.02, 0.04], 0.01, "学习率（Adam）"),
     "epochs": ([20, 30, 40, 60], 40, "最多训练轮数（控制器可能提前停止）"),
     "hidden": ([4, 8, 12], 8, "深部分隐层宽度"),
-    "rank": ([0, 4], 4, "DCN-v2 交叉层的秩（0 = 不用交叉层）"),
+    "rank": ([4], 4, "DCN-v2 交叉层的秩（固定开启，不参与进化）"),
     "emb": ([0, 4], 4, "根因 ID 嵌入维度（0 = 不用嵌入）"),
     "l2": ([1e-4, 3e-4, 1e-3, 3e-3], 3e-4, "L2 正则（宽部分锚定在贝叶斯权重）"),
     "bias_l2": ([3e-4, 1e-3, 3e-3, 1e-2], 1e-3, "根因偏置层的 L2"),
@@ -108,7 +108,8 @@ def _public(ev: dict) -> dict:
     return {k: v for k, v in ev.items() if not k.startswith("_")}
 
 
-SEARCHED = [k for k in SPACE if k != "anchor"]  # anchor 只在连续训练里起作用，外层从贝叶斯初始化公平比较时不搜索它
+# anchor 只在连续训练里起作用（外层从贝叶斯初始化公平比较时不搜索它）；只有一个取值的旋钮（交叉层秩，固定开启）也不搜索
+SEARCHED = [k for k in SPACE if k != "anchor" and len(SPACE[k][0]) > 1]
 
 
 def _propose(db: Session, parent: dict, n_edits: int, rng: random.Random) -> tuple[dict, list[dict]]:

@@ -24,6 +24,29 @@ def test_untrained_model_equals_bayes_ranking():
         assert max(abs(a - h["posterior"]) for a, h in zip(p, hyps)) < 1e-3
 
 
+def test_raw_signals_find_the_excursion_tool_without_batch_leakage():
+    from app.fab.analytics import raw_signals
+
+    tw = FabTwin()
+    hits = n = 0
+    for i in range(16):
+        t = tw.make_task(TaskSpec("OVL_DRIFT", "medium"), 7_100 + i)
+        rs = raw_signals(t.observation)
+        assert rs and all("#" not in k for k in rs["steps"])  # 只用每道工序都有的机台因子，不用物料批次（孪生伪迹）
+        if t.hidden["tool"]:
+            best = max(rs["steps"].items(), key=lambda kv: kv[1]["t"])
+            n += 1
+            hits += best[1]["tool"] == t.hidden["tool"]
+    assert n and hits / n >= 0.6  # 中等强度的异常：连续指标的时间窗检验多数能指到真正的机台
+
+
+def test_old_models_with_fewer_features_fall_back_to_bayes():
+    m = FastModel(4, seed=1, rank=0, emb=2)
+    d = m.to_dict()
+    assert FastModel.from_dict(d) is not None
+    assert FastModel.from_dict({**d, "d": D - 8}) is None  # 特征维度变了的旧模型不再使用
+
+
 def test_backprop_matches_numerical_gradient():
     rng = random.Random(0)
     m = FastModel(3, seed=1, rank=2, emb=2)

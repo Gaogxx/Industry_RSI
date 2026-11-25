@@ -13,7 +13,8 @@ Google 的大规模排序系统，显式特征交叉）；损失用列表式 sof
 
 - 初始化时 v、w_c、偏置都为 0：未训练的模型 = 贝叶斯排序。训练学的是“在贝叶斯之上的校正”，
   晋升门要求它在留出题上不比贝叶斯差，才拿到裁决权。
-- 结构超参数（隐层宽度、交叉层秩、嵌入维度）由训练策略决定，RSI-Opt 外层可以按实测结果改它们。
+- DCN-v2 交叉层固定开启（加了原始信号特征后，命中率不变、概率校准更好：ECE 0.021 → 0.014）；
+  隐层宽度、根因嵌入维度由训练策略决定，RSI-Opt 外层可以按实测结果改它们。
 - 训练 = Adam + L2（宽部分锚定在贝叶斯权重，全部参数锚定在上一版，连续训练时不遗忘）；
   训练循环里有控制器（RSI-Opt 的内层）：每个 epoch 末决定继续 / 降学习率 / 回滚 / 提前停止。
 """
@@ -80,11 +81,12 @@ class FastModel:
         return FastModel(self.H, list(self.theta), T=self.T, rank=self.R, emb=self.K)
 
     def to_dict(self) -> dict:
-        return {**self.arch, "T": round(self.T, 4), "theta": [round(v, 5) for v in self.theta]}
+        return {**self.arch, "d": D, "T": round(self.T, 4), "theta": [round(v, 5) for v in self.theta]}
 
     @classmethod
     def from_dict(cls, d: dict | None) -> "FastModel | None":
-        if not d or not d.get("theta"):
+        """特征维度变了（例如新增了原始信号特征）的旧模型不能再用：返回 None，快脑退回贝叶斯，等下一个训练窗口。"""
+        if not d or not d.get("theta") or d.get("d", 19) != D:
             return None
         return cls(d["hidden"], d["theta"], T=d.get("T", 1.0), rank=d.get("rank", 0), emb=d.get("emb", 0))
 

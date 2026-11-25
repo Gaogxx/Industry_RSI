@@ -3,7 +3,10 @@
 1. 共性分析（Commonality）：失效批次在哪台机台/腔体/物料批次上显著富集 —— Fisher 精确检验 + Bonferroni 校正；
 2. 变点检测：可疑机台从哪天开始变坏，是否紧跟 PM 事件；
 3. 晶圆图空间特征分类：边缘环 / 中心 / 划痕 / 簇状 / 随机；
-4. FDC 参数偏移：变点前后传感器均值偏移多少个 σ。
+4. FDC 参数偏移：变点前后传感器均值偏移多少个 σ；
+5. 原始信号（v0.7，给快脑小模型用）：用连续的良率 / 失效率而不是“是否失效”的二值，先找整体变点，
+   再在变点之后的时间窗里按工序逐台机台做 Welch t 检验；同时看该机台变点之前是否本来就差、变点前是否刚做过 PM。
+   只用每道工序都有的机台因子（物料批次字段在孪生里只给材料类根因生成，用它会泄露答案）。
 
 输出“证据摘要”，供贝叶斯因果图谱做根因排序。
 """
@@ -183,6 +186,56 @@ def fdc_shift(fdc: dict[str, list[dict]], tool: str, since: str | None) -> list[
     return sorted(out, key=lambda x: -abs(x["z"]))
 
 
+def _welch(a: list[float], b: list[float]) -> float:
+    if len(a) < 3 or len(b) < 3:
+        return 0.0
+    ma, mb = mean(a), mean(b)
+    va = sum((x - ma) ** 2 for x in a) / (len(a) - 1)
+    vb = sum((x - mb) ** 2 for x in b) / (len(b) - 1)
+    se = math.sqrt(va / len(a) + vb / len(b)) or 1e-9
+    return (ma - mb) / se
+
+
+def raw_signals(ds: dict) -> dict:
+    """原始信号摘要：整体变点 + 变点后时间窗内逐工序、逐机台的连续指标检验（坏的方向为正）。"""
+    lots = sorted(ds.get("lots") or [], key=lambda l: l["time"])
+    if len(lots) < 24:
+        return {}
+    key = "yield" if "yield" in lots[0] else "fail_rate"
+    bad = [(-l[key] if key == "yield" else l[key]) for l in lots]
+    n = len(bad)
+    pre = [0.0]
+    for v in bad:
+        pre.append(pre[-1] + v)
+    sd = pstdev(bad) or 1e-9
+    best_k, best_z = n // 2, 0.0
+    for k in range(10, n - 10):  # 整体变点：变坏幅度的标准化差最大处（两侧各至少 10 批）
+        m1, m2 = pre[k] / k, (pre[n] - pre[k]) / (n - k)
+        z = (m2 - m1) / sd * math.sqrt(k * (n - k) / n)
+        if z > best_z:
+            best_k, best_z = k, z
+    t_star = lots[best_k]["time"]
+    pms = [e for e in ds.get("events", []) if e.get("type") == "PM"]
+    steps = sorted({f for l in lots for f in l["steps"] if f in STEPS})
+    out = {}
+    for f in steps:
+        tools = sorted({l["steps"][f] for l in lots if f in l["steps"]})
+        if len(tools) < 2:
+            continue
+        rows = []
+        for t in tools:
+            post_in = [b for l, b in zip(lots[best_k:], bad[best_k:]) if l["steps"].get(f) == t]
+            post_out = [b for l, b in zip(lots[best_k:], bad[best_k:]) if l["steps"].get(f) not in (None, t)]
+            pre_in = [b for l, b in zip(lots[:best_k], bad[:best_k]) if l["steps"].get(f) == t]
+            pre_out = [b for l, b in zip(lots[:best_k], bad[:best_k]) if l["steps"].get(f) not in (None, t)]
+            rows.append((_welch(post_in, post_out), _welch(pre_in, pre_out), t))
+        rows.sort(key=lambda r: -r[0])
+        t_best, t_pre, tool = rows[0]
+        pm = any(e["tool"] == tool and -72 <= _hours(e["time"], t_star) <= 24 for e in pms)
+        out[f] = {"tool": tool, "t": round(t_best, 2), "gap": round(t_best - rows[1][0], 2), "pre": round(t_pre, 2), "pm": pm}
+    return {"t_star": t_star, "z_star": round(best_z, 2), "steps": out}
+
+
 def analyze_dataset(ds: dict) -> dict:
     """原始数据 → 证据摘要。"""
     lots = ds["lots"]
@@ -209,4 +262,5 @@ def analyze_dataset(ds: dict) -> dict:
         "wafer_pattern_conf": round(votes[pattern] / max(1, len(sigs)), 2) if pattern else None,
         "wafer_signatures": sigs,
         "step_names": {k: STEPS[k].name for k in {s["step"] for s in suspects} if k in STEPS},
+        "raw_signals": raw_signals(ds),
     }

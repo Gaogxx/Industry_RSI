@@ -18,7 +18,8 @@ from collections import OrderedDict
 from sqlmodel import Session, col, select
 
 from ..fab.analytics import analyze_dataset
-from ..models import Case, HarnessReceipt
+from ..fab.analytics import raw_signals
+from ..models import Case, FabDataset, HarnessReceipt
 from ..rsi.agents import Curriculum
 from ..rsi.memory import MemoryState
 from ..rsi.twin import FabTwin, TaskSpec, observed_symptom
@@ -27,7 +28,7 @@ from .features import candidate_rows
 POOL_SEED, CAL_SEED = 7_500_000, 8_900_000  # 训练池 750 万 ~ 990 万段（按池编号轮换 24 块）；校准集固定
 HOLDOUT_BASE, HOLDOUT_ROUNDS, HOLDOUT_SPAN = 10_000_000, 40, 50_000  # 留出集每晋升一次换一块（1000 万 ~ 1200 万段）
 HOLDOUT_PER_SYMPTOM, CAL_PER_SYMPTOM = 40, 20
-KEEP = ("summary", "suspects", "change_point", "fdc")
+KEEP = ("summary", "suspects", "change_point", "fdc", "raw_signals")
 _OBS: OrderedDict = OrderedDict()
 _OBS_MAX = 24_000
 
@@ -101,7 +102,13 @@ def receipt_samples(db: Session, mem: MemoryState, weight: float, limit: int = 4
         truth = (rc.outcome or {}).get("cause_code")
         if not truth or not case.evidence or not rc.symptom:
             continue
-        s = to_sample({"symptom": rc.symptom, "evidence": case.evidence, "truth": truth}, mem, weight, "line")
+        ev = case.evidence
+        if "raw_signals" not in ev:  # 升级前分析的案例没有原始信号摘要：有原始数据就补算，没有就不用它训练
+            ds = db.get(FabDataset, case.id)
+            if ds is None or not ds.data:
+                continue
+            ev = {**ev, "raw_signals": raw_signals(ds.data)}
+        s = to_sample({"symptom": rc.symptom, "evidence": ev, "truth": truth}, mem, weight, "line")
         s["receipt"] = rc.id
         out.append(s)
     return out
