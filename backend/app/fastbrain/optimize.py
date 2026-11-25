@@ -6,6 +6,7 @@
   · 存档：所有候选（包括被拒的）留档，跨 run 继承；父代采样 ∝ sigmoid(得分 − 中位数) / (1 + 子代数)。
   · 提议：每次改 1~2 个旋钮，往哪个方向改参考训练知识库里该方向的历史成败（tip:policy:*）；停用的方向几乎不再尝试。
   · 验收：每个候选从贝叶斯初始化重新训练（公平比较），在 search 池上训练、select 集上评估；
+          DCN-v2 交叉层的秩默认 4，属于“必要时才改”的旋钮：只有对数损失显著下降才接受改动；
           RSI-Opt 原文没有验收门、留出任务第 1 代后就不再提升——这里补上：
           对数损失配对区间上界 < 0（显著更好）才接受；落在噪声带内时，只有更便宜（训练步数少 20% 或参数少）才接受；
           命中率配对区间下界不得低于 −2 个百分点。最后只用一次封存的 report 集决定是否换掉在用策略。
@@ -35,7 +36,7 @@ SPACE: dict[str, tuple[list, object, str]] = {
     "lr": ([0.005, 0.01, 0.02, 0.04], 0.01, "学习率（Adam）"),
     "epochs": ([20, 30, 40, 60], 40, "最多训练轮数（控制器可能提前停止）"),
     "hidden": ([4, 8, 12], 8, "深部分隐层宽度"),
-    "rank": ([4], 4, "DCN-v2 交叉层的秩（固定开启，不参与进化）"),
+    "rank": ([0, 4, 8], 4, "DCN-v2 交叉层的秩（默认 4；只有显著更好时才改，见 STRICT）"),
     "emb": ([0, 4], 4, "根因 ID 嵌入维度（0 = 不用嵌入）"),
     "l2": ([1e-4, 3e-4, 1e-3, 3e-3], 3e-4, "L2 正则（宽部分锚定在贝叶斯权重）"),
     "bias_l2": ([3e-4, 1e-3, 3e-3, 1e-2], 1e-3, "根因偏置层的 L2"),
@@ -47,6 +48,9 @@ SPACE: dict[str, tuple[list, object, str]] = {
 }
 DEFAULT = {k: v[1] for k, v in SPACE.items()}
 ARCH = ("hidden", "rank", "emb")
+# 必要时才改的旋钮：改它的候选只有在 select 集上对数损失显著下降才接受，不走“噪声带内但更便宜”的复杂度感知通道
+# （交叉层默认开启；不能因为“同样好、更省”就被去掉）
+STRICT = {"rank"}
 SPLITS = {"search": (5_100_000, 120), "select": (5_200_000, 25), "report": (5_300_000, 25)}
 NON_INFERIOR = -0.02
 FAIL_STREAK = 2
@@ -108,8 +112,23 @@ def _public(ev: dict) -> dict:
     return {k: v for k, v in ev.items() if not k.startswith("_")}
 
 
-# anchor 只在连续训练里起作用（外层从贝叶斯初始化公平比较时不搜索它）；只有一个取值的旋钮（交叉层秩，固定开启）也不搜索
+# anchor 只在连续训练里起作用（外层从贝叶斯初始化公平比较时不搜索它）
 SEARCHED = [k for k in SPACE if k != "anchor" and len(SPACE[k][0]) > 1]
+
+
+def verdict(edits: list[dict], ll: tuple, hit: tuple, cheaper: bool) -> tuple[str, str]:
+    """select 集验收：命中率不退步为前提；对数损失显著下降接受；噪声带内只接受更便宜的——但 STRICT 旋钮必须显著更好。"""
+    mean, lo, hi = ll
+    strict = [e["component"] for e in edits if e["component"] in STRICT]
+    if hit[1] < NON_INFERIOR:
+        return "rejected", f"select 集命中率可能退步（配对差下界 {hit[1] * 100:+.1f} 个百分点）"
+    if hi < 0:
+        return "accepted", f"select 集对数损失显著下降（配对差 95% 区间 [{lo:+.3f}, {hi:+.3f}]）"
+    if strict:
+        return "rejected", f"改了{'、'.join(SPACE[k][2].split('（')[0] for k in strict)}：这类结构旋钮必要时才改，需要对数损失显著下降（[{lo:+.3f}, {hi:+.3f}]）"
+    if mean <= 0.005 and cheaper:
+        return "accepted", "对数损失在噪声带内，但训练更便宜（步数少 20% 以上或参数更少）：复杂度感知接受"
+    return "rejected", f"对数损失改进不显著（[{lo:+.3f}, {hi:+.3f}]）" + ("" if cheaper else "，也没有更便宜")
 
 
 def _propose(db: Session, parent: dict, n_edits: int, rng: random.Random) -> tuple[dict, list[dict]]:
@@ -174,15 +193,7 @@ async def evolve_training(db: Session, mem: MemoryState, *, generations: int = 2
             hmean, hlo, hhi = paired_ci(ev["_correct"], bev["_correct"])
             cheaper = (res["cost"]["steps"] < 0.8 * best["res"]["cost"]["steps"]
                        or res["cost"]["params"] < best["res"]["cost"]["params"])
-            status = "rejected"
-            if hlo < NON_INFERIOR:
-                note = f"select 集命中率可能退步（配对差下界 {hlo * 100:+.1f} 个百分点）"
-            elif hi < 0:
-                status, note = "accepted", f"select 集对数损失显著下降（配对差 95% 区间 [{lo:+.3f}, {hi:+.3f}]）"
-            elif mean <= 0.005 and cheaper:
-                status, note = "accepted", "对数损失在噪声带内，但训练更便宜（步数少 20% 以上或参数更少）：复杂度感知接受"
-            else:
-                note = f"对数损失改进不显著（[{lo:+.3f}, {hi:+.3f}]）" + ("" if cheaper else "，也没有更便宜")
+            status, note = verdict(edits, (mean, lo, hi), (hmean, hlo, hhi), cheaper)
             row = TrainingPolicy(run_id=run_id, parent_id=parent["id"] or None, params=cand, edits=edits, status=status, note=note,
                                  scores={"select": _public(ev), "cost": res["cost"], "generation": gen,
                                          "controller": [d["action"] for d in res["log"]["decisions"]],

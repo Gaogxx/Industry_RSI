@@ -99,6 +99,15 @@ def test_training_knowledge_retires_contradicted_facts_and_blames_tips():
         assert tip.status == "retired" and not playbook.guidance(db)["controller"]["decay_on_plateau"]
 
 
+def test_cross_layer_rank_defaults_to_4_and_changes_only_when_clearly_better():
+    assert optimize.DEFAULT["rank"] == 4 and "rank" in optimize.SEARCHED
+    noise, cheaper = (0.0, -0.004, 0.003), True
+    ok_hit = (0.0, -0.01, 0.01)
+    assert optimize.verdict([{"component": "rank"}], noise, ok_hit, cheaper)[0] == "rejected"  # 同样好、更省也不去掉交叉层
+    assert optimize.verdict([{"component": "hidden"}], noise, ok_hit, cheaper)[0] == "accepted"  # 普通旋钮照常复杂度感知接受
+    assert optimize.verdict([{"component": "rank"}], (-0.02, -0.03, -0.01), ok_hit, False)[0] == "accepted"  # 显著更好才改
+
+
 async def test_rsi_opt_outer_loop_archives_policies(client, monkeypatch):
     monkeypatch.setattr(optimize, "SPLITS", {"search": (5_100_000, 20), "select": (5_200_000, 6), "report": (5_300_000, 6)})
     engine = create_engine("sqlite://")
